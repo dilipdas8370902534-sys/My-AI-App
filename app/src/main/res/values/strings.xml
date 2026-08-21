@@ -1,0 +1,8 @@
+<resources>
+    <string name="app_name">ChatToPDF</string>
+    <string name="hint_url">Paste chat link here (e.g. https://chat.qwen.ai/...)</string>
+    <string name="btn_load">Load Link</string>
+    <string name="btn_extract">Extract Chat</string>
+    <string name="btn_generate_pdf">Generate PDF</string>
+    <string name="label_printing_area">Printing Area</string>
+</resources>
