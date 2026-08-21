@@ -2,6 +2,7 @@ package com.example.chattopdf
 
 import android.Manifest
 import android.content.ContentValues
+import android.content.Context
 import android.content.pm.PackageManager
 import android.graphics.Canvas
 import android.graphics.Color
@@ -17,9 +18,12 @@ import android.provider.MediaStore
 import android.text.Layout
 import android.text.StaticLayout
 import android.text.TextPaint
+import android.view.inputmethod.InputMethodManager
 import android.webkit.JavascriptInterface
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.widget.Button
+import android.widget.EditText
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
@@ -41,6 +45,8 @@ import java.util.Locale
 class MainActivity : AppCompatActivity() {
 
     private lateinit var webView: WebView
+    private lateinit var etUrl: EditText
+    private lateinit var btnLoad: Button
     private val storagePermissionCode = 1001
 
     private val pageWidth = 595
@@ -56,13 +62,30 @@ class MainActivity : AppCompatActivity() {
         setContentView(R.layout.activity_main)
 
         webView = findViewById(R.id.webView)
+        etUrl = findViewById(R.id.etUrl)
+        btnLoad = findViewById(R.id.btnLoad)
         val fab = findViewById<ExtendedFloatingActionButton>(R.id.fabExportPdf)
 
         webView.settings.javaScriptEnabled = true
         webView.settings.domStorageEnabled = true
         webView.webViewClient = WebViewClient()
         webView.addJavascriptInterface(ChatBridge(), "AndroidPdfExporter")
-        webView.loadUrl("https://chat.qwen.ai") // Changed default URL to Qwen for you
+        
+        webView.loadUrl("https://chat.qwen.ai")
+
+        btnLoad.setOnClickListener {
+            var url = etUrl.text.toString().trim()
+            if (url.isNotEmpty()) {
+                if (!url.startsWith("http://") && !url.startsWith("https://")) {
+                    url = "https://$url"
+                }
+                webView.loadUrl(url)
+                val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
+                imm.hideSoftInputFromWindow(etUrl.windowToken, 0)
+            } else {
+                Toast.makeText(this, "Please enter a URL", Toast.LENGTH_SHORT).show()
+            }
+        }
 
         fab.setOnClickListener {
             if (hasStoragePermission()) {
@@ -117,7 +140,7 @@ class MainActivity : AppCompatActivity() {
                     val messages = parseMessages(json)
                     if (messages.isEmpty()) {
                         withContext(Dispatchers.Main) {
-                            Toast.makeText(this@MainActivity, "No chat messages found on this page.", Toast.LENGTH_LONG).show()
+                            Toast.makeText(this@MainActivity, "No text could be extracted.", Toast.LENGTH_LONG).show()
                         }
                         return@launch
                     }
