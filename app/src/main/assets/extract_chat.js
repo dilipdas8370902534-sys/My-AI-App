@@ -1,94 +1,111 @@
 (function () {
     "use strict";
 
-    var LINE_NUMBER_SELECTOR = [
-        '.line-number',
-        '.line-numbers',
-        '.line-numbers-rows',
-        '.linenumber',
-        '.lineNumber',
-        '.hljs-ln-numbers',
-        '.hljs-ln-n',
-        '[class*="line-number"]',
-        '[class*="hljs-ln"]',
-        '.token-line-number',
-        '.gutter',
-        '.cm-lineNumbers',
-        '.CodeMirror-linenumber',
-        '[data-line-number]',
-        '[aria-hidden="true"]',
-        'button',
-        'svg',
-        '.copy-button'
+    var JUNK = [
+        'button', 'svg', 'nav', 'header', 'footer', 'script', 'style', 'noscript',
+        'input', 'textarea', 'select',
+        '[class*="copy"]', '[class*="Copy"]',
+        '[class*="line-number"]', '[class*="lineNumber"]', '[class*="linenumber"]',
+        '.line-numbers', '.line-numbers-rows', '.hljs-ln-numbers', '.hljs-ln-n',
+        '.gutter', '.cm-lineNumbers', '.CodeMirror-linenumber', '[data-line-number]'
     ].join(',');
 
-    function cleanNode(node) {
+    function cleanText(node) {
         var clone = node.cloneNode(true);
-        var junks = clone.querySelectorAll(LINE_NUMBER_SELECTOR);
-        for (var i = 0; i < junks.length; i++) {
-            if (junks[i] && junks[i].parentNode) junks[i].parentNode.removeChild(junks[i]);
+        var junk = clone.querySelectorAll(JUNK);
+        for (var i = 0; i < junk.length; i++) {
+            if (junk[i] && junk[i].parentNode) junk[i].parentNode.removeChild(junk[i]);
         }
-        var text = clone.innerText || clone.textContent || '';
-        return text.replace(/\u00a0/g, ' ').replace(/\n{3,}/g, '\n\n').trim();
+        var t = clone.innerText || clone.textContent || '';
+        return t.replace(/\u00a0/g, ' ')
+            .replace(/[ \t]+\n/g, '\n')
+            .replace(/\n{3,}/g, '\n\n')
+            .trim();
     }
 
-    var TURN_SELECTOR_PRIORITY = [
-        '[data-message-author-role]',
-        '[data-testid="user-turn"], [data-testid="conversation-turn"]',
-        '.message, .chat-message, .msg, .conversation-turn',
-        'article',
-        '.text-base, .markdown'
-    ];
+    function byDocOrder(a, b) {
+        if (a === b) return 0;
+        var p = a.compareDocumentPosition(b);
+        return (p & 4) ? -1 : 1;
+    }
 
-    function findTurns() {
-        for (var s = 0; s < TURN_SELECTOR_PRIORITY.length; s++) {
-            var found = document.querySelectorAll(TURN_SELECTOR_PRIORITY[s]);
-            if (found && found.length > 0) return Array.prototype.slice.call(found);
+    function guessRole(node) {
+        var cls = '';
+        try { cls = (typeof node.className === 'string') ? node.className : ''; } catch (e) {}
+        var h = (
+            (node.getAttribute('data-message-author-role') || '') + ' ' +
+            (node.getAttribute('data-testid') || '') + ' ' +
+            (node.getAttribute('data-role') || '') + ' ' +
+            cls + ' ' + (node.id || '')
+        ).toLowerCase();
+        if (/(user|human|prompt|question|outgoing|my-message)/.test(h)) return 'user';
+        if (/(assistant|bot|model|answer|response|incoming|ai-message|gpt|qwen|gemini|deepseek|claude)/.test(h)) return 'ai';
+        return '';
+    }
+
+    function pushMsg(list, role, text) {
+        if (!text || text.length < 2) return;
+        if (list.length && list[list.length - 1].role === role) {
+            list[list.length - 1].text += '\n' + text;
+        } else {
+            list.push({ role: role, text: text });
         }
-        return [];
     }
 
-    function keepOutermost(nodes) {
-        return nodes.filter(function (node, idx) {
-            for (var j = 0; j < nodes.length; j++) {
-                if (j !== idx && nodes[j] !== node && nodes[j].contains(node)) return false;
-            }
-            return true;
-        });
-    }
-
-    var turns = keepOutermost(findTurns());
     var messages = [];
-    var lastRole = 'ai';
+    var i, t, r;
 
-    for (var i = 0; i < turns.length; i++) {
-        var turn = turns[i];
-        var text = cleanNode(turn);
-        if (text.length > 2) {
-            var hint = (
-                (turn.className || '') + ' ' +
-                (turn.getAttribute('data-message-author-role') || '') + ' ' +
-                (turn.getAttribute('data-testid') || '')
-            ).toLowerCase();
-            var isUser = hint.indexOf('user') !== -1 || hint.indexOf('human') !== -1 || hint.indexOf('you') !== -1;
-            var role = isUser ? 'user' : 'ai';
-            messages.push({ role: role, text: text });
+    // ===== ধাপ ১: স্পষ্ট role attribute (ChatGPT ইত্যাদি) =====
+    var roleNodes = Array.prototype.slice.call(document.querySelectorAll('[data-message-author-role]'));
+    if (roleNodes.length) {
+        roleNodes.sort(byDocOrder);
+        for (i = 0; i < roleNodes.length; i++) {
+            t = cleanText(roleNodes[i]);
+            r = (roleNodes[i].getAttribute('data-message-author-role') || '').toLowerCase() === 'user' ? 'user' : 'ai';
+            pushMsg(messages, r, t);
         }
     }
 
-    if (messages.length === 0) {
-        var bodyText = document.body.innerText;
-        var chunks = bodyText.split(/\n\n+/);
-        for (var k = 0; k < chunks.length; k++) {
-            var chunkText = chunks[k].trim();
-            if (chunkText && chunkText.length > 5) {
-                lastRole = lastRole === 'ai' ? 'user' : 'ai';
-                messages.push({ role: lastRole, text: chunkText });
-            }
+    // ===== ধাপ ২: পরিচিত মেসেজ কন্টেইনার (Qwen, DeepSeek, Gemini ইত্যাদি) =====
+    if (!messages.length) {
+        var sel = [
+            '[class*="message"]', '[class*="msg-item"]', '[class*="chat-item"]',
+            '[class*="chat-message"]', '[class*="conversation-turn"]',
+            '[class*="chat-turn"]', '[data-testid*="turn"]', 'article'
+        ].join(',');
+        var nodes = Array.prototype.slice.call(document.querySelectorAll(sel));
+        // ভেতরে আরেকটি মেসেজ-নোড আছে এমন বড় wrapper বাদ দেই (শুধু আসল বাবল রাখি)
+        nodes = nodes.filter(function (n) { return n.querySelectorAll(sel).length === 0; });
+        nodes.sort(byDocOrder);
+        var expectUser = true; // চ্যাট সবসময় প্রশ্ন দিয়ে শুরু হয়
+        for (i = 0; i < nodes.length; i++) {
+            t = cleanText(nodes[i]);
+            if (t.length < 2) continue;
+            r = guessRole(nodes[i]);
+            if (!r) r = expectUser ? 'user' : 'ai';
+            pushMsg(messages, r, t);
+            expectUser = (r !== 'user');
         }
     }
 
-    var payload = JSON.stringify(messages);
+    // ===== ধাপ ৩: শেষ উপায় — টেক্সট ব্লকে ভাগ করা =====
+    if (!messages.length) {
+        var chunks = (document.body.innerText || '').split(/\n\n+/);
+        var expectUser2 = true;
+        for (i = 0; i < chunks.length; i++) {
+            t = chunks[i].trim();
+            if (t.length < 3) continue;
+            pushMsg(messages, expectUser2 ? 'user' : 'ai', t);
+            expectUser2 = !expectUser2;
+        }
+    }
+
+    var payload = JSON.stringify({
+        title: document.title || 'Chat Export',
+        url: location.href,
+        messages: messages
+    });
+
     if (window.AndroidPdfExporter && window.AndroidPdfExporter.receiveChatData) {
         window.AndroidPdfExporter.receiveChatData(payload);
     }
