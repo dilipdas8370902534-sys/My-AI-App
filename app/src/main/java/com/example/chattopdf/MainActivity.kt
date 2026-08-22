@@ -34,7 +34,7 @@ import com.google.android.material.floatingactionbutton.ExtendedFloatingActionBu
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import org.json.JSONArray
+import org.json.JSONObject
 import java.io.File
 import java.io.FileOutputStream
 import java.text.SimpleDateFormat
@@ -51,8 +51,13 @@ class MainActivity : AppCompatActivity() {
 
     private val pageWidth = 595
     private val pageHeight = 842
-    private val margin = 40f
-    private val contentWidth get() = pageWidth - (margin * 2)
+    private val marginLeft = 30f
+    private val marginRight = 30f
+    private val marginTop = 40f
+    private val marginBottom = 50f
+    private val contentWidth get() = pageWidth - marginLeft - marginRight
+
+    data class ChatMessage(val role: String, val text: String)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -77,7 +82,7 @@ class MainActivity : AppCompatActivity() {
                 val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
                 imm.hideSoftInputFromWindow(etUrl.windowToken, 0)
             } else {
-                Toast.makeText(this, "Please enter a URL", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, "আগে একটি URL লিখুন", Toast.LENGTH_SHORT).show()
             }
         }
 
@@ -104,7 +109,7 @@ class MainActivity : AppCompatActivity() {
         if (requestCode == storagePermissionCode && grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
             injectExtractionScript()
         } else if (requestCode == storagePermissionCode) {
-            Toast.makeText(this, "Storage permission is required.", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, "স্টোরেজ পারমিশন প্রয়োজন।", Toast.LENGTH_LONG).show()
         }
     }
 
@@ -118,30 +123,44 @@ class MainActivity : AppCompatActivity() {
         fun receiveChatData(json: String) {
             lifecycleScope.launch(Dispatchers.IO) {
                 try {
-                    val messages = parseMessages(json)
+                    val (title, url, messages) = parsePayload(json)
                     if (messages.isEmpty()) {
-                        withContext(Dispatchers.Main) { Toast.makeText(this@MainActivity, "No text could be extracted.", Toast.LENGTH_LONG).show() }
+                        withContext(Dispatchers.Main) {
+                            Toast.makeText(this@MainActivity, "কোনো টেক্সট পাওয়া যায়নি! চ্যাটটি সম্পূর্ণ লোড হয়েছে কিনা দেখুন।", Toast.LENGTH_LONG).show()
+                        }
                         return@launch
                     }
                     val fileName = "Chat_Export_${SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())}.pdf"
-                    val savedPath = generateAndSaveBeautifulPdf(messages, fileName)
-                    withContext(Dispatchers.Main) { Toast.makeText(this@MainActivity, "PDF saved to: $savedPath", Toast.LENGTH_LONG).show() }
+                    val savedPath = generateAndSavePdf(title, url, messages, fileName)
+                    withContext(Dispatchers.Main) {
+                        Toast.makeText(this@MainActivity, "PDF সেভ হয়েছে: $savedPath", Toast.LENGTH_LONG).show()
+                    }
                 } catch (e: Exception) {
-                    withContext(Dispatchers.Main) { Toast.makeText(this@MainActivity, "Export failed: ${e.message}", Toast.LENGTH_LONG).show() }
+                    withContext(Dispatchers.Main) {
+                        Toast.makeText(this@MainActivity, "এক্সপোর্ট ব্যর্থ: ${e.message}", Toast.LENGTH_LONG).show()
+                    }
                 }
             }
         }
     }
 
-    private fun parseMessages(json: String): List<Pair<String, String>> {
-        val result = mutableListOf<Pair<String, String>>()
-        val array = JSONArray(json)
-        for (i in 0 until array.length()) {
-            val obj = array.getJSONObject(i)
-            val text = obj.optString("text", "").trim()
-            if (text.isNotEmpty()) result.add(obj.optString("role", "ai") to text)
+    private fun parsePayload(json: String): Triple<String, String, List<ChatMessage>> {
+        val obj = JSONObject(json)
+        val title = obj.optString("title", "Chat Export")
+        val url = obj.optString("url", "")
+        val list = mutableListOf<ChatMessage>()
+        val arr = obj.optJSONArray("messages")
+        if (arr != null) {
+            for (i in 0 until arr.length()) {
+                val m = arr.optJSONObject(i) ?: continue
+                val text = m.optString("text", "").trim()
+                if (text.isNotEmpty()) {
+                    val role = if (m.optString("role", "ai") == "user") "user" else "ai"
+                    list.add(ChatMessage(role, text))
+                }
+            }
         }
-        return result
+        return Triple(title, url, list)
     }
 
     private fun buildTextPaint(bold: Boolean, size: Float, color: Int): TextPaint {
@@ -152,115 +171,164 @@ class MainActivity : AppCompatActivity() {
         return paint
     }
 
-    private fun generateAndSaveBeautifulPdf(messages: List<Pair<String, String>>, fileName: String): String {
+    private fun generateAndSavePdf(
+        chatTitle: String,
+        chatUrl: String,
+        messages: List<ChatMessage>,
+        fileName: String
+    ): String {
         val pdfDocument = PdfDocument()
 
-        val userBgColor = Color.parseColor("#E3F2FD")
-        val aiBgColor = Color.parseColor("#F5F5F5")
-        val userTitleColor = Color.parseColor("#1565C0")
-        val aiTitleColor = Color.parseColor("#424242")
+        // ===== রঙ: প্রশ্ন = সবুজ, উত্তর = ধূসর/নীল =====
+        val userBgColor = Color.parseColor("#E8F5E9")
+        val aiBgColor = Color.parseColor("#ECEFF1")
+        val userBarColor = Color.parseColor("#2E7D32")
+        val aiBarColor = Color.parseColor("#1565C0")
+        val userTitleColor = Color.parseColor("#1B5E20")
+        val aiTitleColor = Color.parseColor("#0D47A1")
         val textColor = Color.parseColor("#212121")
 
-        val userTitlePaint = buildTextPaint(true, 13f, userTitleColor)
-        val aiTitlePaint = buildTextPaint(true, 13f, aiTitleColor)
+        val headerPaint = buildTextPaint(true, 15f, Color.parseColor("#0D47A1"))
+        val smallPaint = buildTextPaint(false, 9f, Color.parseColor("#757575"))
+        val userTitlePaint = buildTextPaint(true, 12.5f, userTitleColor)
+        val aiTitlePaint = buildTextPaint(true, 12.5f, aiTitleColor)
         val bodyPaint = buildTextPaint(false, 11.5f, textColor)
+        val dividerPaint = Paint().apply {
+            color = Color.parseColor("#BDBDBD")
+            strokeWidth = 1f
+        }
 
         var pageNumber = 1
         var page = pdfDocument.startPage(PdfDocument.PageInfo.Builder(pageWidth, pageHeight, pageNumber).create())
         var canvas: Canvas = page.canvas
-        var cursorY = margin
+        var cursorY = marginTop
+
+        fun drawFooter() {
+            val label = "Page $pageNumber"
+            val w = smallPaint.measureText(label)
+            canvas.drawText(label, (pageWidth - w) / 2f, pageHeight - 20f, smallPaint)
+        }
 
         fun startNewPage() {
+            drawFooter()
             pdfDocument.finishPage(page)
             pageNumber++
             page = pdfDocument.startPage(PdfDocument.PageInfo.Builder(pageWidth, pageHeight, pageNumber).create())
             canvas = page.canvas
-            cursorY = margin
+            cursorY = marginTop
         }
 
-        val padding = 16f
-        // To make it look like a chat, we give a maximum width for messages.
-        val maxMessageWidth = contentWidth * 0.85f 
-        
-        for ((role, text) in messages) {
-            val isUser = role == "user"
-            val bgPaint = Paint().apply { color = if (isUser) userBgColor else aiBgColor }
-            val titlePaint = if (isUser) userTitlePaint else aiTitlePaint
-            val label = if (isUser) "USER" else "AI"
+        // ===== প্রথম পেজের হেডার (টাইটেল, লিংক, তারিখ) =====
+        val safeTitle = if (chatTitle.isBlank()) "Chat Export" else chatTitle
+        val titleLayout = StaticLayout.Builder.obtain(safeTitle, 0, safeTitle.length, headerPaint, contentWidth.toInt())
+            .setAlignment(Layout.Alignment.ALIGN_NORMAL).build()
+        canvas.save()
+        canvas.translate(marginLeft, cursorY)
+        titleLayout.draw(canvas)
+        canvas.restore()
+        cursorY += titleLayout.height + 6f
 
-            // Measure the actual width needed for the text.
-            val measuredTextWidth = bodyPaint.measureText(text)
-            val messageWidth = if (measuredTextWidth + (padding * 2) < maxMessageWidth) {
-                measuredTextWidth + (padding * 2)
-            } else {
-                maxMessageWidth
-            }
-            
-            // Calculate X positions for alignment (User to the right, AI to the left)
-            val bubbleStartX = if (isUser) {
-                pageWidth - margin - messageWidth
-            } else {
-                margin
-            }
-            
-            val innerWidth = messageWidth - (padding * 2)
+        val dateStr = SimpleDateFormat("dd MMM yyyy, hh:mm a", Locale.US).format(Date())
+        val infoText = (if (chatUrl.isNotBlank()) "$chatUrl\n" else "") +
+            "Exported: $dateStr  |  Total messages: ${messages.size}"
+        val infoLayout = StaticLayout.Builder.obtain(infoText, 0, infoText.length, smallPaint, contentWidth.toInt())
+            .setAlignment(Layout.Alignment.ALIGN_NORMAL).build()
+        canvas.save()
+        canvas.translate(marginLeft, cursorY)
+        infoLayout.draw(canvas)
+        canvas.restore()
+        cursorY += infoLayout.height + 8f
+
+        canvas.drawLine(marginLeft, cursorY, marginLeft + contentWidth, cursorY, dividerPaint)
+        cursorY += 24f
+
+        // ===== প্রতিটি মেসেজ আলাদা রঙের বাবলে =====
+        val barWidth = 6f
+        val padding = 14f
+        val innerWidth = contentWidth - barWidth - (padding * 2)
+
+        var questionNo = 0
+        var answerNo = 0
+
+        for (msg in messages) {
+            if (msg.text.isBlank()) continue
+            val isUser = msg.role == "user"
+            if (isUser) questionNo++ else answerNo++
+
+            val label = if (isUser) "USER  |  প্রশ্ন #$questionNo" else "AI  |  উত্তর #$answerNo"
+            val bgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = if (isUser) userBgColor else aiBgColor }
+            val barPaint = Paint().apply { color = if (isUser) userBarColor else aiBarColor }
+            val titlePaint = if (isUser) userTitlePaint else aiTitlePaint
 
             val labelLayout = StaticLayout.Builder.obtain(label, 0, label.length, titlePaint, innerWidth.toInt())
-                .setAlignment(if (isUser) Layout.Alignment.ALIGN_OPPOSITE else Layout.Alignment.ALIGN_NORMAL).build()
-            val bodyLayout = StaticLayout.Builder.obtain(text, 0, text.length, bodyPaint, innerWidth.toInt())
-                .setAlignment(Layout.Alignment.ALIGN_NORMAL).setLineSpacing(2f, 1.2f).build()
+                .setAlignment(Layout.Alignment.ALIGN_NORMAL).build()
+            val bodyLayout = StaticLayout.Builder.obtain(msg.text, 0, msg.text.length, bodyPaint, innerWidth.toInt())
+                .setAlignment(Layout.Alignment.ALIGN_NORMAL)
+                .setLineSpacing(2f, 1.15f)
+                .build()
+            if (bodyLayout.lineCount == 0) continue
 
-            var currentLine = 0
-            var isFirstPart = true
+            var lineIndex = 0
+            var isFirstChunk = true
 
-            while (currentLine < bodyLayout.lineCount || isFirstPart) {
-                val availableHeight = (pageHeight - margin) - cursorY
-                var fitHeight = 0f
-                var linesToDraw = 0
-                val labelHeight = if (isFirstPart) labelLayout.height.toFloat() + 8f else 0f
+            while (isFirstChunk || lineIndex < bodyLayout.lineCount) {
+                val available = (pageHeight - marginBottom) - cursorY
+                val labelH = if (isFirstChunk) labelLayout.height + 8f else 0f
 
-                for (i in currentLine until bodyLayout.lineCount) {
-                    val lh = (bodyLayout.getLineBottom(i) - bodyLayout.getLineTop(i)).toFloat()
-                    if (labelHeight + fitHeight + lh + (padding * 2) > availableHeight && (!isFirstPart || linesToDraw > 0)) {
-                        break
+                var linesFit = 0
+                var textH = 0f
+                while (lineIndex + linesFit < bodyLayout.lineCount) {
+                    val lineH = (bodyLayout.getLineBottom(lineIndex + linesFit) - bodyLayout.getLineTop(lineIndex + linesFit)).toFloat()
+                    if (padding * 2 + labelH + textH + lineH > available) break
+                    textH += lineH
+                    linesFit++
+                }
+
+                if (linesFit == 0) {
+                    if (cursorY > marginTop + 2f) {
+                        startNewPage()
+                        continue
                     }
-                    fitHeight += lh
-                    linesToDraw++
+                    linesFit = 1
+                    textH = (bodyLayout.getLineBottom(lineIndex) - bodyLayout.getLineTop(lineIndex)).toFloat()
                 }
 
-                val totalDrawHeight = labelHeight + fitHeight + (padding * 2)
+                val chunkH = padding * 2 + labelH + textH
 
-                // Draw Bubble Background
-                val rect = RectF(bubbleStartX, cursorY, bubbleStartX + messageWidth, cursorY + totalDrawHeight)
-                canvas.drawRoundRect(rect, 16f, 16f, bgPaint)
+                // বাবল + বাম পাশের রঙিন বার
+                canvas.drawRoundRect(RectF(marginLeft, cursorY, marginLeft + contentWidth, cursorY + chunkH), 10f, 10f, bgPaint)
+                canvas.drawRect(RectF(marginLeft, cursorY, marginLeft + barWidth, cursorY + chunkH), barPaint)
 
-                // Draw Text
                 canvas.save()
-                canvas.translate(bubbleStartX + padding, cursorY + padding)
-                if (isFirstPart) {
+                canvas.translate(marginLeft + barWidth + padding, cursorY + padding)
+                if (isFirstChunk) {
                     labelLayout.draw(canvas)
-                    canvas.translate(0f, labelHeight)
+                    canvas.translate(0f, labelH)
                 }
-
-                if (linesToDraw > 0) {
-                     val chunkTop = bodyLayout.getLineTop(currentLine).toFloat()
-                     val chunkBottom = bodyLayout.getLineBottom(currentLine + linesToDraw - 1).toFloat()
-                     canvas.translate(0f, -chunkTop)
-                     canvas.clipRect(0f, chunkTop, innerWidth, chunkBottom)
-                     bodyLayout.draw(canvas)
-                }
+                val chunkTop = bodyLayout.getLineTop(lineIndex).toFloat()
+                val chunkBottom = bodyLayout.getLineBottom(lineIndex + linesFit - 1).toFloat()
+                canvas.clipRect(0f, chunkTop, innerWidth, chunkBottom)
+                canvas.translate(0f, -chunkTop)
+                bodyLayout.draw(canvas)
                 canvas.restore()
 
-                cursorY += totalDrawHeight + 16f
-                currentLine += linesToDraw
-                isFirstPart = false
+                cursorY += chunkH
+                lineIndex += linesFit
+                isFirstChunk = false
 
-                if (currentLine < bodyLayout.lineCount) startNewPage()
+                if (lineIndex < bodyLayout.lineCount) {
+                    startNewPage()
+                } else {
+                    cursorY += 10f
+                    if (cursorY < pageHeight - marginBottom - 30f) {
+                        canvas.drawLine(marginLeft + 40f, cursorY, marginLeft + contentWidth - 40f, cursorY, dividerPaint)
+                    }
+                    cursorY += 16f
+                }
             }
-
-            if (cursorY > pageHeight - margin - 60f) startNewPage()
         }
 
+        drawFooter()
         pdfDocument.finishPage(page)
         val savedPath = writePdfToPublicDownloads(pdfDocument, fileName)
         pdfDocument.close()
@@ -277,10 +345,10 @@ class MainActivity : AppCompatActivity() {
                 put(MediaStore.Downloads.IS_PENDING, 1)
             }
             val uri: Uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
-                ?: throw IllegalStateException("Unable to create the file in the public Downloads folder.")
+                ?: throw IllegalStateException("পাবলিক Downloads ফোল্ডারে ফাইল তৈরি করা গেল না।")
 
             resolver.openOutputStream(uri)?.use { pdfDocument.writeTo(it) }
-                ?: throw IllegalStateException("Unable to open an output stream for $uri")
+                ?: throw IllegalStateException("আউটপুট স্ট্রিম খোলা গেল না: $uri")
 
             values.clear()
             values.put(MediaStore.Downloads.IS_PENDING, 0)
