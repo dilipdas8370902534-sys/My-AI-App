@@ -9,7 +9,8 @@
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:label="Chat to PDF"
-        android:theme="@style/Theme.ChatToPdf">
+        android:theme="@style/Theme.ChatToPdf"
+        android:usesCleartextTraffic="true">
         <activity
             android:name=".MainActivity"
             android:configChanges="orientation|screenSize|keyboardHidden"
