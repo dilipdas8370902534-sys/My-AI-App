@@ -47,7 +47,10 @@ class MainActivity : AppCompatActivity() {
     private lateinit var webView: WebView
     private lateinit var etUrl: EditText
     private lateinit var btnLoad: Button
+    private lateinit var btnHome: Button
     private val storagePermissionCode = 1001
+
+    private val homeUrl = "file:///android_asset/home.html"
 
     private val pageWidth = 595
     private val pageHeight = 842
@@ -66,13 +69,20 @@ class MainActivity : AppCompatActivity() {
         webView = findViewById(R.id.webView)
         etUrl = findViewById(R.id.etUrl)
         btnLoad = findViewById(R.id.btnLoad)
+        btnHome = findViewById(R.id.btnHome)
         val fab = findViewById<ExtendedFloatingActionButton>(R.id.fabExportPdf)
 
         webView.settings.javaScriptEnabled = true
         webView.settings.domStorageEnabled = true
         webView.webViewClient = WebViewClient()
         webView.addJavascriptInterface(ChatBridge(), "AndroidPdfExporter")
-        webView.loadUrl("https://chat.qwen.ai")
+
+        // এখন আর Qwen সরাসরি খুলবে না — প্রথমে হোম স্ক্রিন আসবে
+        webView.loadUrl(homeUrl)
+
+        btnHome.setOnClickListener {
+            webView.loadUrl(homeUrl)
+        }
 
         btnLoad.setOnClickListener {
             var url = etUrl.text.toString().trim()
@@ -114,6 +124,11 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun injectExtractionScript() {
+        if (webView.url == homeUrl) {
+            Toast.makeText(this, "আগে একটি AI চ্যাট খুলুন, তারপর Export চাপুন।", Toast.LENGTH_LONG).show()
+            return
+        }
+        Toast.makeText(this, "চ্যাট পড়া হচ্ছে, একটু অপেক্ষা করুন...", Toast.LENGTH_SHORT).show()
         val js = assets.open("extract_chat.js").bufferedReader().use { it.readText() }
         webView.evaluateJavascript(js, null)
     }
@@ -133,7 +148,7 @@ class MainActivity : AppCompatActivity() {
                     val fileName = "Chat_Export_${SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())}.pdf"
                     val savedPath = generateAndSavePdf(title, url, messages, fileName)
                     withContext(Dispatchers.Main) {
-                        Toast.makeText(this@MainActivity, "PDF সেভ হয়েছে: $savedPath", Toast.LENGTH_LONG).show()
+                        Toast.makeText(this@MainActivity, "✅ PDF সেভ হয়েছে: $savedPath", Toast.LENGTH_LONG).show()
                     }
                 } catch (e: Exception) {
                     withContext(Dispatchers.Main) {
@@ -179,7 +194,6 @@ class MainActivity : AppCompatActivity() {
     ): String {
         val pdfDocument = PdfDocument()
 
-        // ===== রঙ: প্রশ্ন = সবুজ, উত্তর = ধূসর/নীল =====
         val userBgColor = Color.parseColor("#E8F5E9")
         val aiBgColor = Color.parseColor("#ECEFF1")
         val userBarColor = Color.parseColor("#2E7D32")
@@ -218,7 +232,6 @@ class MainActivity : AppCompatActivity() {
             cursorY = marginTop
         }
 
-        // ===== প্রথম পেজের হেডার (টাইটেল, লিংক, তারিখ) =====
         val safeTitle = if (chatTitle.isBlank()) "Chat Export" else chatTitle
         val titleLayout = StaticLayout.Builder.obtain(safeTitle, 0, safeTitle.length, headerPaint, contentWidth.toInt())
             .setAlignment(Layout.Alignment.ALIGN_NORMAL).build()
@@ -242,7 +255,6 @@ class MainActivity : AppCompatActivity() {
         canvas.drawLine(marginLeft, cursorY, marginLeft + contentWidth, cursorY, dividerPaint)
         cursorY += 24f
 
-        // ===== প্রতিটি মেসেজ আলাদা রঙের বাবলে =====
         val barWidth = 6f
         val padding = 14f
         val innerWidth = contentWidth - barWidth - (padding * 2)
@@ -295,7 +307,6 @@ class MainActivity : AppCompatActivity() {
 
                 val chunkH = padding * 2 + labelH + textH
 
-                // বাবল + বাম পাশের রঙিন বার
                 canvas.drawRoundRect(RectF(marginLeft, cursorY, marginLeft + contentWidth, cursorY + chunkH), 10f, 10f, bgPaint)
                 canvas.drawRect(RectF(marginLeft, cursorY, marginLeft + barWidth, cursorY + chunkH), barPaint)
 
