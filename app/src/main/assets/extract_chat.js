@@ -3,22 +3,52 @@
 
     var JUNK = [
         'button', 'svg', 'nav', 'header', 'footer', 'script', 'style', 'noscript',
-        'input', 'textarea', 'select',
-        '[class*="copy"]', '[class*="Copy"]',
+        'input', 'textarea', 'select', 'iframe',
+        '[class*="copy"]', '[class*="Copy"]', '[class*="share"]',
         '[class*="line-number"]', '[class*="lineNumber"]', '[class*="linenumber"]',
         '.line-numbers', '.line-numbers-rows', '.hljs-ln-numbers', '.hljs-ln-n',
         '.gutter', '.cm-lineNumbers', '.CodeMirror-linenumber', '[data-line-number]'
     ].join(',');
 
+    function isVisible(el) {
+        if (!el || el.nodeType !== 1) return true;
+        if (el.offsetWidth || el.offsetHeight || el.getClientRects().length) return true;
+        return false;
+    }
+
     function cleanText(node) {
         var clone = node.cloneNode(true);
+
+        // অদৃশ্য ও জাঙ্ক এলিমেন্ট বাদ দেই
         var junk = clone.querySelectorAll(JUNK);
-        for (var i = 0; i < junk.length; i++) {
-            if (junk[i] && junk[i].parentNode) junk[i].parentNode.removeChild(junk[i]);
+        for (var j = 0; j < junk.length; j++) {
+            if (junk[j] && junk[j].parentNode) junk[j].parentNode.removeChild(junk[j]);
         }
-        var t = clone.innerText || clone.textContent || '';
+
+        // <br> কে নিউলাইনে রূপান্তর
+        var brs = clone.querySelectorAll('br');
+        for (var b = 0; b < brs.length; b++) {
+            brs[b].parentNode.replaceChild(document.createTextNode('\n'), brs[b]);
+        }
+
+        // কোড ব্লক (pre) আগে-পরে নিউলাইন দিয়ে আলাদা রাখি — যেন কোড না হারায়
+        var pres = clone.querySelectorAll('pre');
+        for (var p = 0; p < pres.length; p++) {
+            var codeText = pres[p].textContent || '';
+            var marker = document.createTextNode('\n' + codeText.replace(/\n+$/, '') + '\n');
+            pres[p].parentNode.replaceChild(marker, pres[p]);
+        }
+
+        // প্যারা ও লিস্ট আইটেমের পর নিউলাইন
+        var blocks = clone.querySelectorAll('p, li, tr, h1, h2, h3, h4, h5, h6, div');
+        for (var k = 0; k < blocks.length; k++) {
+            blocks[k].appendChild(document.createTextNode('\n'));
+        }
+
+        var t = clone.textContent || '';
         return t.replace(/\u00a0/g, ' ')
             .replace(/[ \t]+\n/g, '\n')
+            .replace(/\n[ \t]+/g, '\n')
             .replace(/\n{3,}/g, '\n\n')
             .trim();
     }
@@ -39,12 +69,13 @@
             cls + ' ' + (node.id || '')
         ).toLowerCase();
         if (/(user|human|prompt|question|outgoing|my-message)/.test(h)) return 'user';
-        if (/(assistant|bot|model|answer|response|incoming|ai-message|gpt|qwen|gemini|deepseek|claude)/.test(h)) return 'ai';
+        if (/(assistant|bot|model|answer|response|incoming|ai-message|gpt|qwen|gemini|deepseek|claude|copilot|grok)/.test(h)) return 'ai';
         return '';
     }
 
     function pushMsg(list, role, text) {
         if (!text || text.length < 2) return;
+        if (list.length && list[list.length - 1].text === text) return; // ডুপ্লিকেট বাদ
         if (list.length && list[list.length - 1].role === role) {
             list[list.length - 1].text += '\n' + text;
         } else {
@@ -60,6 +91,7 @@
     if (roleNodes.length) {
         roleNodes.sort(byDocOrder);
         for (i = 0; i < roleNodes.length; i++) {
+            if (!isVisible(roleNodes[i])) continue;
             t = cleanText(roleNodes[i]);
             r = (roleNodes[i].getAttribute('data-message-author-role') || '').toLowerCase() === 'user' ? 'user' : 'ai';
             pushMsg(messages, r, t);
@@ -74,10 +106,11 @@
             '[class*="chat-turn"]', '[data-testid*="turn"]', 'article'
         ].join(',');
         var nodes = Array.prototype.slice.call(document.querySelectorAll(sel));
-        // ভেতরে আরেকটি মেসেজ-নোড আছে এমন বড় wrapper বাদ দেই (শুধু আসল বাবল রাখি)
-        nodes = nodes.filter(function (n) { return n.querySelectorAll(sel).length === 0; });
+        nodes = nodes.filter(function (n) {
+            return n.querySelectorAll(sel).length === 0 && isVisible(n);
+        });
         nodes.sort(byDocOrder);
-        var expectUser = true; // চ্যাট সবসময় প্রশ্ন দিয়ে শুরু হয়
+        var expectUser = true;
         for (i = 0; i < nodes.length; i++) {
             t = cleanText(nodes[i]);
             if (t.length < 2) continue;
