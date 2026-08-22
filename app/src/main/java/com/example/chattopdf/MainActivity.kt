@@ -51,11 +51,8 @@ class MainActivity : AppCompatActivity() {
 
     private val pageWidth = 595
     private val pageHeight = 842
-    private val marginLeft = 30f
-    private val marginRight = 30f
-    private val marginTop = 40f
-    private val marginBottom = 40f
-    private val contentWidth get() = pageWidth - marginLeft - marginRight
+    private val margin = 40f
+    private val contentWidth get() = pageWidth - (margin * 2)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -171,27 +168,45 @@ class MainActivity : AppCompatActivity() {
         var pageNumber = 1
         var page = pdfDocument.startPage(PdfDocument.PageInfo.Builder(pageWidth, pageHeight, pageNumber).create())
         var canvas: Canvas = page.canvas
-        var cursorY = marginTop
+        var cursorY = margin
 
         fun startNewPage() {
             pdfDocument.finishPage(page)
             pageNumber++
             page = pdfDocument.startPage(PdfDocument.PageInfo.Builder(pageWidth, pageHeight, pageNumber).create())
             canvas = page.canvas
-            cursorY = marginTop
+            cursorY = margin
         }
 
         val padding = 16f
-        val innerWidth = contentWidth - (padding * 2)
-
+        // To make it look like a chat, we give a maximum width for messages.
+        val maxMessageWidth = contentWidth * 0.85f 
+        
         for ((role, text) in messages) {
             val isUser = role == "user"
             val bgPaint = Paint().apply { color = if (isUser) userBgColor else aiBgColor }
             val titlePaint = if (isUser) userTitlePaint else aiTitlePaint
-            val label = if (isUser) "\uD83E\uDDD1\u200D\uD83D\uDCBB USER" else "\uD83E\uDD16 AI"
+            val label = if (isUser) "USER" else "AI"
+
+            // Measure the actual width needed for the text.
+            val measuredTextWidth = bodyPaint.measureText(text)
+            val messageWidth = if (measuredTextWidth + (padding * 2) < maxMessageWidth) {
+                measuredTextWidth + (padding * 2)
+            } else {
+                maxMessageWidth
+            }
+            
+            // Calculate X positions for alignment (User to the right, AI to the left)
+            val bubbleStartX = if (isUser) {
+                pageWidth - margin - messageWidth
+            } else {
+                margin
+            }
+            
+            val innerWidth = messageWidth - (padding * 2)
 
             val labelLayout = StaticLayout.Builder.obtain(label, 0, label.length, titlePaint, innerWidth.toInt())
-                .setAlignment(Layout.Alignment.ALIGN_NORMAL).build()
+                .setAlignment(if (isUser) Layout.Alignment.ALIGN_OPPOSITE else Layout.Alignment.ALIGN_NORMAL).build()
             val bodyLayout = StaticLayout.Builder.obtain(text, 0, text.length, bodyPaint, innerWidth.toInt())
                 .setAlignment(Layout.Alignment.ALIGN_NORMAL).setLineSpacing(2f, 1.2f).build()
 
@@ -199,7 +214,7 @@ class MainActivity : AppCompatActivity() {
             var isFirstPart = true
 
             while (currentLine < bodyLayout.lineCount || isFirstPart) {
-                val availableHeight = (pageHeight - marginBottom) - cursorY
+                val availableHeight = (pageHeight - margin) - cursorY
                 var fitHeight = 0f
                 var linesToDraw = 0
                 val labelHeight = if (isFirstPart) labelLayout.height.toFloat() + 8f else 0f
@@ -215,31 +230,35 @@ class MainActivity : AppCompatActivity() {
 
                 val totalDrawHeight = labelHeight + fitHeight + (padding * 2)
 
-                val rect = RectF(marginLeft, cursorY, marginLeft + contentWidth, cursorY + totalDrawHeight)
-                canvas.drawRoundRect(rect, 12f, 12f, bgPaint)
+                // Draw Bubble Background
+                val rect = RectF(bubbleStartX, cursorY, bubbleStartX + messageWidth, cursorY + totalDrawHeight)
+                canvas.drawRoundRect(rect, 16f, 16f, bgPaint)
 
+                // Draw Text
                 canvas.save()
-                canvas.translate(marginLeft + padding, cursorY + padding)
+                canvas.translate(bubbleStartX + padding, cursorY + padding)
                 if (isFirstPart) {
                     labelLayout.draw(canvas)
                     canvas.translate(0f, labelHeight)
                 }
 
-                val chunkTop = bodyLayout.getLineTop(currentLine).toFloat()
-                val chunkBottom = bodyLayout.getLineBottom(currentLine + linesToDraw - 1).toFloat()
-                canvas.translate(0f, -chunkTop)
-                canvas.clipRect(0f, chunkTop, innerWidth, chunkBottom)
-                bodyLayout.draw(canvas)
+                if (linesToDraw > 0) {
+                     val chunkTop = bodyLayout.getLineTop(currentLine).toFloat()
+                     val chunkBottom = bodyLayout.getLineBottom(currentLine + linesToDraw - 1).toFloat()
+                     canvas.translate(0f, -chunkTop)
+                     canvas.clipRect(0f, chunkTop, innerWidth, chunkBottom)
+                     bodyLayout.draw(canvas)
+                }
                 canvas.restore()
 
-                cursorY += totalDrawHeight + 20f
+                cursorY += totalDrawHeight + 16f
                 currentLine += linesToDraw
                 isFirstPart = false
 
                 if (currentLine < bodyLayout.lineCount) startNewPage()
             }
 
-            if (cursorY > pageHeight - marginBottom - 40f) startNewPage()
+            if (cursorY > pageHeight - margin - 60f) startNewPage()
         }
 
         pdfDocument.finishPage(page)
