@@ -7,6 +7,7 @@ import android.content.pm.PackageManager
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
+import android.graphics.RectF
 import android.graphics.Typeface
 import android.graphics.pdf.PdfDocument
 import android.media.MediaScannerConnection
@@ -36,7 +37,6 @@ import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import java.io.File
 import java.io.FileOutputStream
-import java.io.OutputStream
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -51,10 +51,10 @@ class MainActivity : AppCompatActivity() {
 
     private val pageWidth = 595
     private val pageHeight = 842
-    private val marginLeft = 40
-    private val marginRight = 40
-    private val marginTop = 48
-    private val marginBottom = 48
+    private val marginLeft = 30f
+    private val marginRight = 30f
+    private val marginTop = 40f
+    private val marginBottom = 40f
     private val contentWidth get() = pageWidth - marginLeft - marginRight
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -70,15 +70,12 @@ class MainActivity : AppCompatActivity() {
         webView.settings.domStorageEnabled = true
         webView.webViewClient = WebViewClient()
         webView.addJavascriptInterface(ChatBridge(), "AndroidPdfExporter")
-        
         webView.loadUrl("https://chat.qwen.ai")
 
         btnLoad.setOnClickListener {
             var url = etUrl.text.toString().trim()
             if (url.isNotEmpty()) {
-                if (!url.startsWith("http://") && !url.startsWith("https://")) {
-                    url = "https://$url"
-                }
+                if (!url.startsWith("http://") && !url.startsWith("https://")) { url = "https://$url" }
                 webView.loadUrl(url)
                 val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
                 imm.hideSoftInputFromWindow(etUrl.windowToken, 0)
@@ -98,32 +95,19 @@ class MainActivity : AppCompatActivity() {
 
     private fun hasStoragePermission(): Boolean {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) return true
-        return ContextCompat.checkSelfPermission(
-            this, Manifest.permission.WRITE_EXTERNAL_STORAGE
-        ) == PackageManager.PERMISSION_GRANTED
+        return ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED
     }
 
     private fun requestStoragePermission() {
-        ActivityCompat.requestPermissions(
-            this,
-            arrayOf(Manifest.permission.WRITE_EXTERNAL_STORAGE),
-            storagePermissionCode
-        )
+        ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.WRITE_EXTERNAL_STORAGE), storagePermissionCode)
     }
 
-    override fun onRequestPermissionsResult(
-        requestCode: Int,
-        permissions: Array<out String>,
-        grantResults: IntArray
-    ) {
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (requestCode == storagePermissionCode &&
-            grantResults.isNotEmpty() &&
-            grantResults[0] == PackageManager.PERMISSION_GRANTED
-        ) {
+        if (requestCode == storagePermissionCode && grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
             injectExtractionScript()
         } else if (requestCode == storagePermissionCode) {
-            Toast.makeText(this, "Storage permission is required to save the PDF.", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, "Storage permission is required.", Toast.LENGTH_LONG).show()
         }
     }
 
@@ -139,20 +123,14 @@ class MainActivity : AppCompatActivity() {
                 try {
                     val messages = parseMessages(json)
                     if (messages.isEmpty()) {
-                        withContext(Dispatchers.Main) {
-                            Toast.makeText(this@MainActivity, "No text could be extracted.", Toast.LENGTH_LONG).show()
-                        }
+                        withContext(Dispatchers.Main) { Toast.makeText(this@MainActivity, "No text could be extracted.", Toast.LENGTH_LONG).show() }
                         return@launch
                     }
-                    val fileName = buildFileName()
-                    val savedPath = generateAndSavePdf(messages, fileName)
-                    withContext(Dispatchers.Main) {
-                        Toast.makeText(this@MainActivity, "PDF saved to: $savedPath", Toast.LENGTH_LONG).show()
-                    }
+                    val fileName = "Chat_Export_${SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())}.pdf"
+                    val savedPath = generateAndSaveBeautifulPdf(messages, fileName)
+                    withContext(Dispatchers.Main) { Toast.makeText(this@MainActivity, "PDF saved to: $savedPath", Toast.LENGTH_LONG).show() }
                 } catch (e: Exception) {
-                    withContext(Dispatchers.Main) {
-                        Toast.makeText(this@MainActivity, "Export failed: ${e.message}", Toast.LENGTH_LONG).show()
-                    }
+                    withContext(Dispatchers.Main) { Toast.makeText(this@MainActivity, "Export failed: ${e.message}", Toast.LENGTH_LONG).show() }
                 }
             }
         }
@@ -163,114 +141,108 @@ class MainActivity : AppCompatActivity() {
         val array = JSONArray(json)
         for (i in 0 until array.length()) {
             val obj = array.getJSONObject(i)
-            val role = obj.optString("role", "ai")
             val text = obj.optString("text", "").trim()
-            if (text.isNotEmpty()) {
-                result.add(role to text)
-            }
+            if (text.isNotEmpty()) result.add(obj.optString("role", "ai") to text)
         }
         return result
     }
 
-    private fun buildFileName(): String {
-        val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
-        return "Chat_Export_$timestamp.pdf"
-    }
-
     private fun buildTextPaint(bold: Boolean, size: Float, color: Int): TextPaint {
         val paint = TextPaint(Paint.ANTI_ALIAS_FLAG or Paint.SUBPIXEL_TEXT_FLAG)
-        paint.isAntiAlias = true
-        paint.isSubpixelText = true
         paint.textSize = size
         paint.color = color
         paint.typeface = Typeface.create(Typeface.SANS_SERIF, if (bold) Typeface.BOLD else Typeface.NORMAL)
         return paint
     }
 
-    private fun generateAndSavePdf(messages: List<Pair<String, String>>, fileName: String): String {
+    private fun generateAndSaveBeautifulPdf(messages: List<Pair<String, String>>, fileName: String): String {
         val pdfDocument = PdfDocument()
-        val titlePaintUser = buildTextPaint(true, 13f, Color.rgb(0, 90, 160))
-        val titlePaintAi = buildTextPaint(true, 13f, Color.rgb(0, 130, 90))
-        val bodyPaint = buildTextPaint(false, 12f, Color.rgb(30, 30, 30))
-        val dividerPaint = Paint().apply {
-            color = Color.rgb(220, 220, 220)
-            strokeWidth = 1f
-        }
+
+        val userBgColor = Color.parseColor("#E3F2FD")
+        val aiBgColor = Color.parseColor("#F5F5F5")
+        val userTitleColor = Color.parseColor("#1565C0")
+        val aiTitleColor = Color.parseColor("#424242")
+        val textColor = Color.parseColor("#212121")
+
+        val userTitlePaint = buildTextPaint(true, 13f, userTitleColor)
+        val aiTitlePaint = buildTextPaint(true, 13f, aiTitleColor)
+        val bodyPaint = buildTextPaint(false, 11.5f, textColor)
 
         var pageNumber = 1
         var page = pdfDocument.startPage(PdfDocument.PageInfo.Builder(pageWidth, pageHeight, pageNumber).create())
         var canvas: Canvas = page.canvas
-        var cursorY = marginTop.toFloat()
+        var cursorY = marginTop
 
         fun startNewPage() {
             pdfDocument.finishPage(page)
             pageNumber++
             page = pdfDocument.startPage(PdfDocument.PageInfo.Builder(pageWidth, pageHeight, pageNumber).create())
             canvas = page.canvas
-            cursorY = marginTop.toFloat()
+            cursorY = marginTop
         }
 
-        fun drawBlock(text: String, paint: TextPaint, topSpacing: Float) {
-            val layout = StaticLayout.Builder
-                .obtain(text, 0, text.length, paint, contentWidth)
-                .setAlignment(Layout.Alignment.ALIGN_NORMAL)
-                .setLineSpacing(2f, 1.1f)
-                .setIncludePad(false)
-                .build()
-
-            if (cursorY + topSpacing > pageHeight - marginBottom) {
-                startNewPage()
-            }
-            cursorY += topSpacing
-
-            var lineStart = 0
-            val lineCount = layout.lineCount
-            while (lineStart < lineCount) {
-                val availableHeight = (pageHeight - marginBottom) - cursorY
-                if (availableHeight < paint.textSize) {
-                    startNewPage()
-                    continue
-                }
-                var lineEnd = lineStart
-                var usedHeight = 0f
-                while (lineEnd < lineCount) {
-                    val lh = (layout.getLineBottom(lineEnd) - layout.getLineTop(lineEnd)).toFloat()
-                    if (usedHeight + lh > availableHeight && lineEnd > lineStart) break
-                    usedHeight += lh
-                    lineEnd++
-                }
-                val top = layout.getLineTop(lineStart)
-                val bottom = layout.getLineBottom(lineEnd - 1)
-                canvas.save()
-                canvas.translate(marginLeft.toFloat(), cursorY - top)
-                canvas.clipRect(0f, top.toFloat(), contentWidth.toFloat(), bottom.toFloat())
-                layout.draw(canvas)
-                canvas.restore()
-                cursorY += usedHeight
-                lineStart = lineEnd
-                if (lineStart < lineCount) startNewPage()
-            }
-        }
+        val padding = 16f
+        val innerWidth = contentWidth - (padding * 2)
 
         for ((role, text) in messages) {
-            val isUser = role.equals("user", ignoreCase = true)
-            val label = if (isUser) "\uD83E\uDDD1\u200D\uD83D\uDCBB USER:" else "\uD83E\uDD16 AI:"
-            val titlePaint = if (isUser) titlePaintUser else titlePaintAi
+            val isUser = role == "user"
+            val bgPaint = Paint().apply { color = if (isUser) userBgColor else aiBgColor }
+            val titlePaint = if (isUser) userTitlePaint else aiTitlePaint
+            val label = if (isUser) "\uD83E\uDDD1\u200D\uD83D\uDCBB USER" else "\uD83E\uDD16 AI"
 
-            drawBlock(label, titlePaint, 14f)
-            drawBlock(text, bodyPaint, 4f)
+            val labelLayout = StaticLayout.Builder.obtain(label, 0, label.length, titlePaint, innerWidth.toInt())
+                .setAlignment(Layout.Alignment.ALIGN_NORMAL).build()
+            val bodyLayout = StaticLayout.Builder.obtain(text, 0, text.length, bodyPaint, innerWidth.toInt())
+                .setAlignment(Layout.Alignment.ALIGN_NORMAL).setLineSpacing(2f, 1.2f).build()
 
-            if (cursorY + 12f > pageHeight - marginBottom) {
-                startNewPage()
-            } else {
-                cursorY += 8f
-                canvas.drawLine(marginLeft.toFloat(), cursorY, (pageWidth - marginRight).toFloat(), cursorY, dividerPaint)
-                cursorY += 12f
+            var currentLine = 0
+            var isFirstPart = true
+
+            while (currentLine < bodyLayout.lineCount || isFirstPart) {
+                val availableHeight = (pageHeight - marginBottom) - cursorY
+                var fitHeight = 0f
+                var linesToDraw = 0
+                val labelHeight = if (isFirstPart) labelLayout.height.toFloat() + 8f else 0f
+
+                for (i in currentLine until bodyLayout.lineCount) {
+                    val lh = (bodyLayout.getLineBottom(i) - bodyLayout.getLineTop(i)).toFloat()
+                    if (labelHeight + fitHeight + lh + (padding * 2) > availableHeight && (!isFirstPart || linesToDraw > 0)) {
+                        break
+                    }
+                    fitHeight += lh
+                    linesToDraw++
+                }
+
+                val totalDrawHeight = labelHeight + fitHeight + (padding * 2)
+
+                val rect = RectF(marginLeft, cursorY, marginLeft + contentWidth, cursorY + totalDrawHeight)
+                canvas.drawRoundRect(rect, 12f, 12f, bgPaint)
+
+                canvas.save()
+                canvas.translate(marginLeft + padding, cursorY + padding)
+                if (isFirstPart) {
+                    labelLayout.draw(canvas)
+                    canvas.translate(0f, labelHeight)
+                }
+
+                val chunkTop = bodyLayout.getLineTop(currentLine).toFloat()
+                val chunkBottom = bodyLayout.getLineBottom(currentLine + linesToDraw - 1).toFloat()
+                canvas.translate(0f, -chunkTop)
+                canvas.clipRect(0f, chunkTop, innerWidth, chunkBottom)
+                bodyLayout.draw(canvas)
+                canvas.restore()
+
+                cursorY += totalDrawHeight + 20f
+                currentLine += linesToDraw
+                isFirstPart = false
+
+                if (currentLine < bodyLayout.lineCount) startNewPage()
             }
+
+            if (cursorY > pageHeight - marginBottom - 40f) startNewPage()
         }
 
         pdfDocument.finishPage(page)
-
         val savedPath = writePdfToPublicDownloads(pdfDocument, fileName)
         pdfDocument.close()
         return savedPath
@@ -286,26 +258,22 @@ class MainActivity : AppCompatActivity() {
                 put(MediaStore.Downloads.IS_PENDING, 1)
             }
             val uri: Uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
-                ?: throw IllegalStateException("Unable to create file in MediaStore Downloads collection.")
+                ?: throw IllegalStateException("Unable to create the file in the public Downloads folder.")
 
-            resolver.openOutputStream(uri)?.use { out: OutputStream ->
-                pdfDocument.writeTo(out)
-            } ?: throw IllegalStateException("Unable to open output stream for $uri")
+            resolver.openOutputStream(uri)?.use { pdfDocument.writeTo(it) }
+                ?: throw IllegalStateException("Unable to open an output stream for $uri")
 
             values.clear()
             values.put(MediaStore.Downloads.IS_PENDING, 0)
             resolver.update(uri, values, null, null)
-
             "/storage/emulated/0/Download/$fileName"
         } else {
-            val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
-            if (!downloadsDir.exists()) downloadsDir.mkdirs()
-            val outFile = File(downloadsDir, fileName)
-            FileOutputStream(outFile).use { out ->
-                pdfDocument.writeTo(out)
-            }
-            MediaScannerConnection.scanFile(this, arrayOf(outFile.absolutePath), arrayOf("application/pdf"), null)
-            outFile.absolutePath
+            val dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+            if (!dir.exists()) dir.mkdirs()
+            val file = File(dir, fileName)
+            FileOutputStream(file).use { pdfDocument.writeTo(it) }
+            MediaScannerConnection.scanFile(this, arrayOf(file.absolutePath), arrayOf("application/pdf"), null)
+            file.absolutePath
         }
     }
 }
