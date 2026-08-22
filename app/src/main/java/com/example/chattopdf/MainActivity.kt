@@ -19,13 +19,17 @@ import android.provider.MediaStore
 import android.text.Layout
 import android.text.StaticLayout
 import android.text.TextPaint
+import android.view.View
 import android.view.inputmethod.InputMethodManager
+import android.webkit.CookieManager
 import android.webkit.JavascriptInterface
+import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.Button
 import android.widget.EditText
 import android.widget.Toast
+import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
@@ -48,9 +52,12 @@ class MainActivity : AppCompatActivity() {
     private lateinit var etUrl: EditText
     private lateinit var btnLoad: Button
     private lateinit var btnHome: Button
-    private val storagePermissionCode = 1001
+    private lateinit var fab: ExtendedFloatingActionButton
 
+    private val storagePermissionCode = 1001
     private val homeUrl = "file:///android_asset/home.html"
+
+    @Volatile private var exporting = false
 
     private val pageWidth = 595
     private val pageHeight = 842
@@ -60,7 +67,12 @@ class MainActivity : AppCompatActivity() {
     private val marginBottom = 50f
     private val contentWidth get() = pageWidth - marginLeft - marginRight
 
+    private val codeStart = '\uE000'
+    private val codeEnd = '\uE001'
+
     data class ChatMessage(val role: String, val text: String)
+    private data class Seg(val text: String, val isCode: Boolean)
+    private class LineItem(val layout: StaticLayout, val line: Int, val isCode: Boolean, val height: Float)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -70,24 +82,39 @@ class MainActivity : AppCompatActivity() {
         etUrl = findViewById(R.id.etUrl)
         btnLoad = findViewById(R.id.btnLoad)
         btnHome = findViewById(R.id.btnHome)
-        val fab = findViewById<ExtendedFloatingActionButton>(R.id.fabExportPdf)
+        fab = findViewById(R.id.fabExportPdf)
 
-        webView.settings.javaScriptEnabled = true
-        webView.settings.domStorageEnabled = true
+        val s = webView.settings
+        s.javaScriptEnabled = true
+        s.domStorageEnabled = true
+        s.databaseEnabled = true
+        s.loadWithOverviewMode = true
+        s.useWideViewPort = true
+        s.setSupportZoom(true)
+        s.builtInZoomControls = true
+        s.displayZoomControls = false
+        s.cacheMode = WebSettings.LOAD_DEFAULT
+        s.mediaPlaybackRequiresUserGesture = false
+        s.mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
+        s.userAgentString = s.userAgentString.replace("; wv", "")
+
+        webView.setLayerType(View.LAYER_TYPE_HARDWARE, null)
+        webView.overScrollMode = View.OVER_SCROLL_NEVER
+        webView.isScrollbarFadingEnabled = true
         webView.webViewClient = WebViewClient()
         webView.addJavascriptInterface(ChatBridge(), "AndroidPdfExporter")
 
-        // এখন আর Qwen সরাসরি খুলবে না — প্রথমে হোম স্ক্রিন আসবে
+        CookieManager.getInstance().setAcceptCookie(true)
+        CookieManager.getInstance().setAcceptThirdPartyCookies(webView, true)
+
         webView.loadUrl(homeUrl)
 
-        btnHome.setOnClickListener {
-            webView.loadUrl(homeUrl)
-        }
+        btnHome.setOnClickListener { webView.loadUrl(homeUrl) }
 
         btnLoad.setOnClickListener {
             var url = etUrl.text.toString().trim()
             if (url.isNotEmpty()) {
-                if (!url.startsWith("http://") && !url.startsWith("https://")) { url = "https://$url" }
+                if (!url.startsWith("http://") && !url.startsWith("https://")) url = "https://$url"
                 webView.loadUrl(url)
                 val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
                 imm.hideSoftInputFromWindow(etUrl.windowToken, 0)
@@ -97,12 +124,25 @@ class MainActivity : AppCompatActivity() {
         }
 
         fab.setOnClickListener {
-            if (hasStoragePermission()) {
-                injectExtractionScript()
-            } else {
-                requestStoragePermission()
-            }
+            if (hasStoragePermission()) startExport() else requestStoragePermission()
         }
+
+        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() {
+                if (webView.canGoBack()) webView.goBack() else finish()
+            }
+        })
+    }
+
+    override fun onPause() {
+        super.onPause()
+        webView.onPause()
+        CookieManager.getInstance().flush()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        webView.onResume()
     }
 
     private fun hasStoragePermission(): Boolean {
@@ -116,45 +156,55 @@ class MainActivity : AppCompatActivity() {
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (requestCode == storagePermissionCode && grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
-            injectExtractionScript()
-        } else if (requestCode == storagePermissionCode) {
-            Toast.makeText(this, "স্টোরেজ পারমিশন প্রয়োজন।", Toast.LENGTH_LONG).show()
+        if (requestCode == storagePermissionCode) {
+            if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) startExport()
+            else Toast.makeText(this, "স্টোরেজ পারমিশন প্রয়োজন।", Toast.LENGTH_LONG).show()
         }
     }
 
-    private fun injectExtractionScript() {
-        if (webView.url == homeUrl) {
+    private fun startExport() {
+        if (exporting) return
+        val current = webView.url ?: ""
+        if (current.startsWith("file:///android_asset")) {
             Toast.makeText(this, "আগে একটি AI চ্যাট খুলুন, তারপর Export চাপুন।", Toast.LENGTH_LONG).show()
             return
         }
-        Toast.makeText(this, "চ্যাট পড়া হচ্ছে, একটু অপেক্ষা করুন...", Toast.LENGTH_SHORT).show()
-        val js = assets.open("extract_chat.js").bufferedReader().use { it.readText() }
-        webView.evaluateJavascript(js, null)
+        exporting = true
+        fab.isEnabled = false
+        fab.text = "পড়া হচ্ছে..."
+        Toast.makeText(this, "পুরো চ্যাট স্ক্রল করে পড়া হচ্ছে, একটু অপেক্ষা করুন...", Toast.LENGTH_SHORT).show()
+
+        lifecycleScope.launch {
+            val js = withContext(Dispatchers.IO) {
+                assets.open("extract_chat.js").bufferedReader().use { it.readText() }
+            }
+            webView.evaluateJavascript(js, null)
+        }
+        fab.postDelayed({ if (exporting) finishExport("সময় শেষ — আবার চেষ্টা করুন।") }, 120000)
+    }
+
+    private fun finishExport(message: String) {
+        exporting = false
+        fab.isEnabled = true
+        fab.text = "Export PDF"
+        Toast.makeText(this, message, Toast.LENGTH_LONG).show()
     }
 
     inner class ChatBridge {
         @JavascriptInterface
         fun receiveChatData(json: String) {
             lifecycleScope.launch(Dispatchers.IO) {
-                try {
+                val result = try {
                     val (title, url, messages) = parsePayload(json)
-                    if (messages.isEmpty()) {
-                        withContext(Dispatchers.Main) {
-                            Toast.makeText(this@MainActivity, "কোনো টেক্সট পাওয়া যায়নি! চ্যাটটি সম্পূর্ণ লোড হয়েছে কিনা দেখুন।", Toast.LENGTH_LONG).show()
-                        }
-                        return@launch
-                    }
-                    val fileName = "Chat_Export_${SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())}.pdf"
-                    val savedPath = generateAndSavePdf(title, url, messages, fileName)
-                    withContext(Dispatchers.Main) {
-                        Toast.makeText(this@MainActivity, "✅ PDF সেভ হয়েছে: $savedPath", Toast.LENGTH_LONG).show()
+                    if (messages.isEmpty()) "কোনো টেক্সট পাওয়া যায়নি! চ্যাটটি সম্পূর্ণ লোড হয়েছে কিনা দেখুন।"
+                    else {
+                        val fileName = "Chat_Export_${SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())}.pdf"
+                        "✅ PDF সেভ হয়েছে: " + generateAndSavePdf(title, url, messages, fileName)
                     }
                 } catch (e: Exception) {
-                    withContext(Dispatchers.Main) {
-                        Toast.makeText(this@MainActivity, "এক্সপোর্ট ব্যর্থ: ${e.message}", Toast.LENGTH_LONG).show()
-                    }
+                    "এক্সপোর্ট ব্যর্থ: ${e.message}"
                 }
+                withContext(Dispatchers.Main) { finishExport(result) }
             }
         }
     }
@@ -178,13 +228,60 @@ class MainActivity : AppCompatActivity() {
         return Triple(title, url, list)
     }
 
-    private fun buildTextPaint(bold: Boolean, size: Float, color: Int): TextPaint {
+    // ---------- কোড ব্লক আলাদা করা ----------
+
+    private fun prepareCode(code: String): String {
+        val sb = StringBuilder()
+        val lines = code.replace("\t", "    ").split("\n")
+        for ((i, line) in lines.withIndex()) {
+            if (i > 0) sb.append('\n')
+            var n = 0
+            while (n < line.length && line[n] == ' ') n++
+            repeat(n) { sb.append('\u00A0') }   // ইনডেন্ট ধরে রাখতে non-breaking space
+            sb.append(line.substring(n))
+        }
+        return sb.toString().trimEnd()
+    }
+
+    private fun splitSegments(raw: String): List<Seg> {
+        val out = mutableListOf<Seg>()
+        var i = 0
+        while (i < raw.length) {
+            val st = raw.indexOf(codeStart, i)
+            if (st < 0) {
+                raw.substring(i).trim().takeIf { it.isNotEmpty() }?.let { out.add(Seg(it, false)) }
+                break
+            }
+            raw.substring(i, st).trim().takeIf { it.isNotEmpty() }?.let { out.add(Seg(it, false)) }
+            val en = raw.indexOf(codeEnd, st + 1)
+            val code = if (en < 0) raw.substring(st + 1) else raw.substring(st + 1, en)
+            prepareCode(code).takeIf { it.isNotBlank() }?.let { out.add(Seg(it, true)) }
+            if (en < 0) break
+            i = en + 1
+        }
+        return out
+    }
+
+    private fun buildTextPaint(bold: Boolean, size: Float, color: Int, mono: Boolean = false): TextPaint {
         val paint = TextPaint(Paint.ANTI_ALIAS_FLAG or Paint.SUBPIXEL_TEXT_FLAG)
         paint.textSize = size
         paint.color = color
-        paint.typeface = Typeface.create(Typeface.SANS_SERIF, if (bold) Typeface.BOLD else Typeface.NORMAL)
+        val family = if (mono) Typeface.MONOSPACE else Typeface.SANS_SERIF
+        paint.typeface = Typeface.create(family, if (bold) Typeface.BOLD else Typeface.NORMAL)
         return paint
     }
+
+    private fun layoutOf(text: String, paint: TextPaint, width: Int, isCode: Boolean): StaticLayout {
+        return StaticLayout.Builder.obtain(text, 0, text.length, paint, if (width < 40) 40 else width)
+            .setAlignment(Layout.Alignment.ALIGN_NORMAL)
+            .setLineSpacing(0f, if (isCode) 1.1f else 1.15f)
+            .setIncludePad(false)
+            .setBreakStrategy(Layout.BREAK_STRATEGY_SIMPLE)
+            .setHyphenationFrequency(Layout.HYPHENATION_FREQUENCY_NONE)
+            .build()
+    }
+
+    // ---------- PDF ----------
 
     private fun generateAndSavePdf(
         chatTitle: String,
@@ -198,19 +295,16 @@ class MainActivity : AppCompatActivity() {
         val aiBgColor = Color.parseColor("#ECEFF1")
         val userBarColor = Color.parseColor("#2E7D32")
         val aiBarColor = Color.parseColor("#1565C0")
-        val userTitleColor = Color.parseColor("#1B5E20")
-        val aiTitleColor = Color.parseColor("#0D47A1")
-        val textColor = Color.parseColor("#212121")
 
         val headerPaint = buildTextPaint(true, 15f, Color.parseColor("#0D47A1"))
         val smallPaint = buildTextPaint(false, 9f, Color.parseColor("#757575"))
-        val userTitlePaint = buildTextPaint(true, 12.5f, userTitleColor)
-        val aiTitlePaint = buildTextPaint(true, 12.5f, aiTitleColor)
-        val bodyPaint = buildTextPaint(false, 11.5f, textColor)
-        val dividerPaint = Paint().apply {
-            color = Color.parseColor("#BDBDBD")
-            strokeWidth = 1f
-        }
+        val userTitlePaint = buildTextPaint(true, 12.5f, Color.parseColor("#1B5E20"))
+        val aiTitlePaint = buildTextPaint(true, 12.5f, Color.parseColor("#0D47A1"))
+        val bodyPaint = buildTextPaint(false, 11.5f, Color.parseColor("#212121"))
+        val codePaint = buildTextPaint(false, 9.3f, Color.parseColor("#102027"), mono = true)
+        val codeBgPaint = Paint().apply { color = Color.parseColor("#F4F5F7") }
+        val codeBarPaint = Paint().apply { color = Color.parseColor("#90A4AE") }
+        val dividerPaint = Paint().apply { color = Color.parseColor("#BDBDBD"); strokeWidth = 1f }
 
         var pageNumber = 1
         var page = pdfDocument.startPage(PdfDocument.PageInfo.Builder(pageWidth, pageHeight, pageNumber).create())
@@ -219,8 +313,7 @@ class MainActivity : AppCompatActivity() {
 
         fun drawFooter() {
             val label = "Page $pageNumber"
-            val w = smallPaint.measureText(label)
-            canvas.drawText(label, (pageWidth - w) / 2f, pageHeight - 20f, smallPaint)
+            canvas.drawText(label, (pageWidth - smallPaint.measureText(label)) / 2f, pageHeight - 20f, smallPaint)
         }
 
         fun startNewPage() {
@@ -232,24 +325,16 @@ class MainActivity : AppCompatActivity() {
             cursorY = marginTop
         }
 
-        val safeTitle = if (chatTitle.isBlank()) "Chat Export" else chatTitle
-        val titleLayout = StaticLayout.Builder.obtain(safeTitle, 0, safeTitle.length, headerPaint, contentWidth.toInt())
-            .setAlignment(Layout.Alignment.ALIGN_NORMAL).build()
-        canvas.save()
-        canvas.translate(marginLeft, cursorY)
-        titleLayout.draw(canvas)
-        canvas.restore()
+        val safeTitle = chatTitle.ifBlank { "Chat Export" }
+        val titleLayout = layoutOf(safeTitle, headerPaint, contentWidth.toInt(), false)
+        canvas.save(); canvas.translate(marginLeft, cursorY); titleLayout.draw(canvas); canvas.restore()
         cursorY += titleLayout.height + 6f
 
         val dateStr = SimpleDateFormat("dd MMM yyyy, hh:mm a", Locale.US).format(Date())
         val infoText = (if (chatUrl.isNotBlank()) "$chatUrl\n" else "") +
             "Exported: $dateStr  |  Total messages: ${messages.size}"
-        val infoLayout = StaticLayout.Builder.obtain(infoText, 0, infoText.length, smallPaint, contentWidth.toInt())
-            .setAlignment(Layout.Alignment.ALIGN_NORMAL).build()
-        canvas.save()
-        canvas.translate(marginLeft, cursorY)
-        infoLayout.draw(canvas)
-        canvas.restore()
+        val infoLayout = layoutOf(infoText, smallPaint, contentWidth.toInt(), false)
+        canvas.save(); canvas.translate(marginLeft, cursorY); infoLayout.draw(canvas); canvas.restore()
         cursorY += infoLayout.height + 8f
 
         canvas.drawLine(marginLeft, cursorY, marginLeft + contentWidth, cursorY, dividerPaint)
@@ -258,6 +343,7 @@ class MainActivity : AppCompatActivity() {
         val barWidth = 6f
         val padding = 14f
         val innerWidth = contentWidth - barWidth - (padding * 2)
+        val codeInset = 6f
 
         var questionNo = 0
         var answerNo = 0
@@ -272,62 +358,75 @@ class MainActivity : AppCompatActivity() {
             val barPaint = Paint().apply { color = if (isUser) userBarColor else aiBarColor }
             val titlePaint = if (isUser) userTitlePaint else aiTitlePaint
 
-            val labelLayout = StaticLayout.Builder.obtain(label, 0, label.length, titlePaint, innerWidth.toInt())
-                .setAlignment(Layout.Alignment.ALIGN_NORMAL).build()
-            val bodyLayout = StaticLayout.Builder.obtain(msg.text, 0, msg.text.length, bodyPaint, innerWidth.toInt())
-                .setAlignment(Layout.Alignment.ALIGN_NORMAL)
-                .setLineSpacing(2f, 1.15f)
-                .build()
-            if (bodyLayout.lineCount == 0) continue
+            val labelLayout = layoutOf(label, titlePaint, innerWidth.toInt(), false)
 
-            var lineIndex = 0
-            var isFirstChunk = true
+            val items = mutableListOf<LineItem>()
+            for (seg in splitSegments(msg.text)) {
+                if (seg.text.isBlank()) continue
+                val paint = if (seg.isCode) codePaint else bodyPaint
+                val w = if (seg.isCode) (innerWidth - codeInset * 2).toInt() else innerWidth.toInt()
+                val lay = layoutOf(seg.text, paint, w, seg.isCode)
+                for (l in 0 until lay.lineCount) {
+                    items.add(LineItem(lay, l, seg.isCode, (lay.getLineBottom(l) - lay.getLineTop(l)).toFloat()))
+                }
+            }
+            if (items.isEmpty()) continue
 
-            while (isFirstChunk || lineIndex < bodyLayout.lineCount) {
+            var pos = 0
+            var firstChunk = true
+
+            while (pos < items.size) {
                 val available = (pageHeight - marginBottom) - cursorY
-                val labelH = if (isFirstChunk) labelLayout.height + 8f else 0f
+                val labelH = if (firstChunk) labelLayout.height + 8f else 0f
 
-                var linesFit = 0
+                var count = 0
                 var textH = 0f
-                while (lineIndex + linesFit < bodyLayout.lineCount) {
-                    val lineH = (bodyLayout.getLineBottom(lineIndex + linesFit) - bodyLayout.getLineTop(lineIndex + linesFit)).toFloat()
-                    if (padding * 2 + labelH + textH + lineH > available) break
-                    textH += lineH
-                    linesFit++
+                while (pos + count < items.size) {
+                    val h = items[pos + count].height
+                    if (padding * 2 + labelH + textH + h > available && (!firstChunk || count > 0)) break
+                    textH += h
+                    count++
                 }
 
-                if (linesFit == 0) {
-                    if (cursorY > marginTop + 2f) {
-                        startNewPage()
-                        continue
-                    }
-                    linesFit = 1
-                    textH = (bodyLayout.getLineBottom(lineIndex) - bodyLayout.getLineTop(lineIndex)).toFloat()
+                if (count == 0) {
+                    if (cursorY > marginTop + 2f) { startNewPage(); continue }
+                    count = 1
+                    textH = items[pos].height
                 }
 
                 val chunkH = padding * 2 + labelH + textH
-
                 canvas.drawRoundRect(RectF(marginLeft, cursorY, marginLeft + contentWidth, cursorY + chunkH), 10f, 10f, bgPaint)
                 canvas.drawRect(RectF(marginLeft, cursorY, marginLeft + barWidth, cursorY + chunkH), barPaint)
 
-                canvas.save()
-                canvas.translate(marginLeft + barWidth + padding, cursorY + padding)
-                if (isFirstChunk) {
-                    labelLayout.draw(canvas)
-                    canvas.translate(0f, labelH)
+                var y = cursorY + padding
+                val xBase = marginLeft + barWidth + padding
+
+                if (firstChunk) {
+                    canvas.save(); canvas.translate(xBase, y); labelLayout.draw(canvas); canvas.restore()
+                    y += labelH
                 }
-                val chunkTop = bodyLayout.getLineTop(lineIndex).toFloat()
-                val chunkBottom = bodyLayout.getLineBottom(lineIndex + linesFit - 1).toFloat()
-                canvas.clipRect(0f, chunkTop, innerWidth, chunkBottom)
-                canvas.translate(0f, -chunkTop)
-                bodyLayout.draw(canvas)
-                canvas.restore()
+
+                for (k in 0 until count) {
+                    val item = items[pos + k]
+                    if (item.isCode) {
+                        canvas.drawRect(RectF(xBase - 2f, y, marginLeft + contentWidth - padding + 2f, y + item.height), codeBgPaint)
+                        canvas.drawRect(RectF(xBase - 2f, y, xBase + 1f, y + item.height), codeBarPaint)
+                    }
+                    val top = item.layout.getLineTop(item.line).toFloat()
+                    canvas.save()
+                    canvas.translate(xBase + (if (item.isCode) codeInset else 0f), y)
+                    canvas.translate(0f, -top)
+                    canvas.clipRect(0f, top, innerWidth, top + item.height)
+                    item.layout.draw(canvas)
+                    canvas.restore()
+                    y += item.height
+                }
 
                 cursorY += chunkH
-                lineIndex += linesFit
-                isFirstChunk = false
+                pos += count
+                firstChunk = false
 
-                if (lineIndex < bodyLayout.lineCount) {
+                if (pos < items.size) {
                     startNewPage()
                 } else {
                     cursorY += 10f
@@ -357,10 +456,8 @@ class MainActivity : AppCompatActivity() {
             }
             val uri: Uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
                 ?: throw IllegalStateException("পাবলিক Downloads ফোল্ডারে ফাইল তৈরি করা গেল না।")
-
             resolver.openOutputStream(uri)?.use { pdfDocument.writeTo(it) }
                 ?: throw IllegalStateException("আউটপুট স্ট্রিম খোলা গেল না: $uri")
-
             values.clear()
             values.put(MediaStore.Downloads.IS_PENDING, 0)
             resolver.update(uri, values, null, null)
