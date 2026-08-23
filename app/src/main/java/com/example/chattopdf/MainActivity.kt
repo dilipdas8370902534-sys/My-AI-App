@@ -7,6 +7,7 @@ import android.content.pm.PackageManager
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
+import android.graphics.Picture
 import android.graphics.RectF
 import android.graphics.Typeface
 import android.graphics.pdf.PdfDocument
@@ -34,6 +35,7 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
+import com.caverock.androidsvg.SVG
 import com.google.android.material.floatingactionbutton.ExtendedFloatingActionButton
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -41,6 +43,8 @@ import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.io.File
 import java.io.FileOutputStream
+import java.net.HttpURLConnection
+import java.net.URL
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -69,10 +73,13 @@ class MainActivity : AppCompatActivity() {
 
     private val codeStart = '\uE000'
     private val codeEnd = '\uE001'
+    private val mediaStart = '\uE002'
+    private val mediaEnd = '\uE003'
 
-    data class ChatMessage(val role: String, val text: String)
-    private data class Seg(val text: String, val isCode: Boolean)
-    private class LineItem(val layout: StaticLayout, val line: Int, val isCode: Boolean, val height: Float)
+    data class ChatMessage(val role: String, val text: String, val media: List<MediaItem> = emptyList())
+    data class MediaItem(val type: String, val data: String, val w: Float, val h: Float)
+    private data class Seg(val text: String, val isCode: Boolean, val mediaIndex: Int = -1)
+    private class LineItem(val layout: StaticLayout?, val line: Int, val isCode: Boolean, val height: Float, val mediaIndex: Int = -1)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -219,16 +226,26 @@ class MainActivity : AppCompatActivity() {
             for (i in 0 until arr.length()) {
                 val m = arr.optJSONObject(i) ?: continue
                 val text = m.optString("text", "").trim()
-                if (text.isNotEmpty()) {
+                val mediaArr = m.optJSONArray("media")
+                val mediaList = mutableListOf<MediaItem>()
+                if (mediaArr != null) {
+                    for (j in 0 until mediaArr.length()) {
+                        val mObj = mediaArr.optJSONObject(j) ?: continue
+                        val type = mObj.optString("type")
+                        val data = mObj.optString("data")
+                        val w = mObj.optDouble("w", 0.0).toFloat()
+                        val h = mObj.optDouble("h", 0.0).toFloat()
+                        mediaList.add(MediaItem(type, data, w, h))
+                    }
+                }
+                if (text.isNotEmpty() || mediaList.isNotEmpty()) {
                     val role = if (m.optString("role", "ai") == "user") "user" else "ai"
-                    list.add(ChatMessage(role, text))
+                    list.add(ChatMessage(role, text, mediaList))
                 }
             }
         }
         return Triple(title, url, list)
     }
-
-    // ---------- কোড ব্লক আলাদা করা ----------
 
     private fun prepareCode(code: String): String {
         val sb = StringBuilder()
@@ -237,27 +254,49 @@ class MainActivity : AppCompatActivity() {
             if (i > 0) sb.append('\n')
             var n = 0
             while (n < line.length && line[n] == ' ') n++
-            repeat(n) { sb.append('\u00A0') }   // ইনডেন্ট ধরে রাখতে non-breaking space
+            repeat(n) { sb.append('\u00A0') }
             sb.append(line.substring(n))
         }
         return sb.toString().trimEnd()
     }
 
-    private fun splitSegments(raw: String): List<Seg> {
+    private fun splitSegments(raw: String, media: List<MediaItem>): List<Seg> {
         val out = mutableListOf<Seg>()
         var i = 0
         while (i < raw.length) {
-            val st = raw.indexOf(codeStart, i)
+            val stCode = raw.indexOf(codeStart, i)
+            val stMedia = raw.indexOf(mediaStart, i)
+            
+            val st = when {
+                stCode < 0 && stMedia < 0 -> -1
+                stCode < 0 -> stMedia
+                stMedia < 0 -> stCode
+                else -> minOf(stCode, stMedia)
+            }
+            
             if (st < 0) {
                 raw.substring(i).trim().takeIf { it.isNotEmpty() }?.let { out.add(Seg(it, false)) }
                 break
             }
+            
             raw.substring(i, st).trim().takeIf { it.isNotEmpty() }?.let { out.add(Seg(it, false)) }
-            val en = raw.indexOf(codeEnd, st + 1)
-            val code = if (en < 0) raw.substring(st + 1) else raw.substring(st + 1, en)
-            prepareCode(code).takeIf { it.isNotBlank() }?.let { out.add(Seg(it, true)) }
-            if (en < 0) break
-            i = en + 1
+            
+            if (st == stCode && st >= 0) {
+                val en = raw.indexOf(codeEnd, st + 1)
+                val code = if (en < 0) raw.substring(st + 1) else raw.substring(st + 1, en)
+                prepareCode(code).takeIf { it.isNotBlank() }?.let { out.add(Seg(it, true)) }
+                i = if (en < 0) raw.length else en + 1
+            } else if (st == stMedia && st >= 0) {
+                val en = raw.indexOf(mediaEnd, st + 1)
+                val idxStr = if (en < 0) raw.substring(st + 1) else raw.substring(st + 1, en)
+                val idx = idxStr.trim().toIntOrNull() ?: -1
+                if (idx >= 0 && idx < media.size) {
+                    out.add(Seg("", false, idx))
+                }
+                i = if (en < 0) raw.length else en + 1
+            } else {
+                i = st + 1
+            }
         }
         return out
     }
@@ -281,7 +320,74 @@ class MainActivity : AppCompatActivity() {
             .build()
     }
 
-    // ---------- PDF ----------
+    private fun drawMedia(canvas: Canvas, item: MediaItem, x: Float, y: Float, maxWidth: Int) {
+        if (item.type == "img") {
+            val bitmap = try {
+                if (item.data.startsWith("data:image")) {
+                    val base64Data = item.data.substring(item.data.indexOf(",") + 1)
+                    val decodedBytes = android.util.Base64.decode(base64Data, android.util.Base64.DEFAULT)
+                    android.graphics.BitmapFactory.decodeByteArray(decodedBytes, 0, decodedBytes.size)
+                } else {
+                    val url = URL(item.data)
+                    val connection = url.openConnection() as HttpURLConnection
+                    connection.doInput = true
+                    connection.connect()
+                    val input = connection.inputStream
+                    android.graphics.BitmapFactory.decodeStream(input)
+                }
+            } catch (e: Exception) {
+                null
+            }
+            
+            if (bitmap != null) {
+                var w = bitmap.width
+                var h = bitmap.height
+                if (w > maxWidth) {
+                    val ratio = maxWidth.toFloat() / w
+                    w = maxWidth
+                    h = (h * ratio).toInt()
+                }
+                val dest = RectF(x, y, x + w, y + h)
+                canvas.drawBitmap(bitmap, null, dest, null)
+            } else {
+                val p = TextPaint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.GRAY; textSize = 12f }
+                canvas.drawText("[ছবি লোড করা যায়নি]", x, y + 20f, p)
+            }
+        } else if (item.type == "svg") {
+            try {
+                val svg = SVG.getFromString(item.data)
+                
+                val docWidth = svg.documentWidth
+                val docHeight = svg.documentHeight
+                
+                var w = if (docWidth > 0) docWidth else maxWidth.toFloat()
+                var h = if (docHeight > 0) docHeight else w
+                
+                if (w <= 0f) w = maxWidth.toFloat()
+                if (h <= 0f) h = w
+                
+                if (w > maxWidth) {
+                    val ratio = maxWidth.toFloat() / w
+                    w = maxWidth.toFloat()
+                    h = (h * ratio)
+                }
+                
+                val picture = Picture()
+                val picCanvas = picture.beginRecording(w.toInt(), h.toInt())
+                svg.renderToCanvas(picCanvas, RectF(0f, 0f, w, h))
+                picture.endRecording()
+                
+                canvas.save()
+                canvas.translate(x, y)
+                picture.draw(canvas)
+                canvas.restore()
+                
+            } catch (e: Exception) {
+                val p = TextPaint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.GRAY; textSize = 12f }
+                canvas.drawText("[SVG রেন্ডার করা যায়নি]", x, y + 20f, p)
+            }
+        }
+    }
 
     private fun generateAndSavePdf(
         chatTitle: String,
@@ -349,7 +455,7 @@ class MainActivity : AppCompatActivity() {
         var answerNo = 0
 
         for (msg in messages) {
-            if (msg.text.isBlank()) continue
+            if (msg.text.isBlank() && msg.media.isEmpty()) continue
             val isUser = msg.role == "user"
             if (isUser) questionNo++ else answerNo++
 
@@ -361,13 +467,31 @@ class MainActivity : AppCompatActivity() {
             val labelLayout = layoutOf(label, titlePaint, innerWidth.toInt(), false)
 
             val items = mutableListOf<LineItem>()
-            for (seg in splitSegments(msg.text)) {
-                if (seg.text.isBlank()) continue
-                val paint = if (seg.isCode) codePaint else bodyPaint
-                val w = if (seg.isCode) (innerWidth - codeInset * 2).toInt() else innerWidth.toInt()
-                val lay = layoutOf(seg.text, paint, w, seg.isCode)
-                for (l in 0 until lay.lineCount) {
-                    items.add(LineItem(lay, l, seg.isCode, (lay.getLineBottom(l) - lay.getLineTop(l)).toFloat()))
+            for (seg in splitSegments(msg.text, msg.media)) {
+                if (seg.isCode) {
+                    if (seg.text.isBlank()) continue
+                    val paint = codePaint
+                    val w = (innerWidth - codeInset * 2).toInt()
+                    val lay = layoutOf(seg.text, paint, w, true)
+                    for (l in 0 until lay.lineCount) {
+                        items.add(LineItem(lay, l, true, (lay.getLineBottom(l) - lay.getLineTop(l)).toFloat()))
+                    }
+                } else if (seg.mediaIndex >= 0) {
+                    val mItem = msg.media[seg.mediaIndex]
+                    val maxW = innerWidth.toInt()
+                    val aspect = if (mItem.w > 0 && mItem.h > 0) mItem.h / mItem.w else 1f
+                    var imgW = maxW
+                    if (mItem.w > 0 && mItem.w < maxW) {
+                        imgW = mItem.w.toInt()
+                    }
+                    val imgH = (imgW * aspect).toInt()
+                    items.add(LineItem(null, 0, false, imgH.toFloat(), seg.mediaIndex))
+                } else {
+                    if (seg.text.isBlank()) continue
+                    val lay = layoutOf(seg.text, bodyPaint, innerWidth.toInt(), false)
+                    for (l in 0 until lay.lineCount) {
+                        items.add(LineItem(lay, l, false, (lay.getLineBottom(l) - lay.getLineTop(l)).toFloat()))
+                    }
                 }
             }
             if (items.isEmpty()) continue
@@ -412,13 +536,19 @@ class MainActivity : AppCompatActivity() {
                         canvas.drawRect(RectF(xBase - 2f, y, marginLeft + contentWidth - padding + 2f, y + item.height), codeBgPaint)
                         canvas.drawRect(RectF(xBase - 2f, y, xBase + 1f, y + item.height), codeBarPaint)
                     }
-                    val top = item.layout.getLineTop(item.line).toFloat()
-                    canvas.save()
-                    canvas.translate(xBase + (if (item.isCode) codeInset else 0f), y)
-                    canvas.translate(0f, -top)
-                    canvas.clipRect(0f, top, innerWidth, top + item.height)
-                    item.layout.draw(canvas)
-                    canvas.restore()
+                    
+                    if (item.mediaIndex >= 0) {
+                        val mItem = msg.media[item.mediaIndex]
+                        drawMedia(canvas, mItem, xBase, y, innerWidth.toInt())
+                    } else if (item.layout != null) {
+                        val top = item.layout.getLineTop(item.line).toFloat()
+                        canvas.save()
+                        canvas.translate(xBase + (if (item.isCode) codeInset else 0f), y)
+                        canvas.translate(0f, -top)
+                        canvas.clipRect(0f, top, innerWidth, top + item.height)
+                        item.layout.draw(canvas)
+                        canvas.restore()
+                    }
                     y += item.height
                 }
 
