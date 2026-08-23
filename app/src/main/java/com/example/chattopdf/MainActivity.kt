@@ -4,10 +4,11 @@ import android.Manifest
 import android.content.ContentValues
 import android.content.Context
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
-import android.graphics.Picture
+import android.graphics.Rect
 import android.graphics.RectF
 import android.graphics.Typeface
 import android.graphics.pdf.PdfDocument
@@ -16,14 +17,15 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Environment
+import android.os.Handler
+import android.os.Looper
 import android.provider.MediaStore
-import android.text.Layout
 import android.text.StaticLayout
 import android.text.TextPaint
+import android.view.PixelCopy
 import android.view.View
 import android.view.inputmethod.InputMethodManager
 import android.webkit.CookieManager
-import android.webkit.JavascriptInterface
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -35,19 +37,20 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
-import com.caverock.androidsvg.SVG
 import com.google.android.material.floatingactionbutton.ExtendedFloatingActionButton
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import org.json.JSONObject
 import java.io.File
 import java.io.FileOutputStream
-import java.net.HttpURLConnection
-import java.net.URL
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlin.coroutines.resume
 
 @Suppress("SetJavaScriptEnabled")
 class MainActivity : AppCompatActivity() {
@@ -70,16 +73,6 @@ class MainActivity : AppCompatActivity() {
     private val marginTop = 40f
     private val marginBottom = 50f
     private val contentWidth get() = pageWidth - marginLeft - marginRight
-
-    private val codeStart = '\uE000'
-    private val codeEnd = '\uE001'
-    private val mediaStart = '\uE002'
-    private val mediaEnd = '\uE003'
-
-    data class ChatMessage(val role: String, val text: String, val media: List<MediaItem> = emptyList())
-    data class MediaItem(val type: String, val data: String, val w: Float, val h: Float)
-    private data class Seg(val text: String, val isCode: Boolean, val mediaIndex: Int = -1)
-    private class LineItem(val layout: StaticLayout?, val line: Int, val isCode: Boolean, val height: Float, val mediaIndex: Int = -1)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -105,11 +98,9 @@ class MainActivity : AppCompatActivity() {
         s.mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
         s.userAgentString = s.userAgentString.replace("; wv", "")
 
-        webView.setLayerType(View.LAYER_TYPE_HARDWARE, null)
         webView.overScrollMode = View.OVER_SCROLL_NEVER
         webView.isScrollbarFadingEnabled = true
         webView.webViewClient = WebViewClient()
-        webView.addJavascriptInterface(ChatBridge(), "AndroidPdfExporter")
 
         CookieManager.getInstance().setAcceptCookie(true)
         CookieManager.getInstance().setAcceptThirdPartyCookies(webView, true)
@@ -169,407 +160,257 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    //==========================================
+    // এক্সপোর্ট শুরু (ক্র্যাশ-প্রুফ)
+    //==========================================
     private fun startExport() {
         if (exporting) return
         val current = webView.url ?: ""
         if (current.startsWith("file:///android_asset")) {
-            Toast.makeText(this, "আগে একটি AI চ্যাট খুলুন, তারপর Export চাপুন।", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, "আগে একটি ওয়েবসাইট খুলুন, তারপর Export চাপুন।", Toast.LENGTH_LONG).show()
             return
         }
         exporting = true
         fab.isEnabled = false
-        fab.text = "পড়া হচ্ছে..."
-        Toast.makeText(this, "পুরো চ্যাট স্ক্রল করে পড়া হচ্ছে, একটু অপেক্ষা করুন...", Toast.LENGTH_SHORT).show()
+        fab.text = "ক্যাপচার..."
+        val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
+        imm.hideSoftInputFromWindow(etUrl.windowToken, 0)
 
         lifecycleScope.launch {
-            val js = withContext(Dispatchers.IO) {
-                assets.open("extract_chat.js").bufferedReader().use { it.readText() }
+            val msg = try {
+                withTimeout(150_000) { captureAndBuildPdf() }
+            } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
+                "সময় শেষ — আবার চেষ্টা করুন।"
+            } catch (e: Exception) {
+                "এক্সপোর্ট ব্যর্থ: ${e.message}"
             }
-            webView.evaluateJavascript(js, null)
+            finishExport(msg)
         }
-        fab.postDelayed({ if (exporting) finishExport("সময় শেষ — আবার চেষ্টা করুন।") }, 120000)
     }
 
     private fun finishExport(message: String) {
         exporting = false
-        fab.isEnabled = true
-        fab.text = "Export PDF"
+        try {
+            fab.isEnabled = true
+            fab.text = "Export PDF"
+            fab.show()
+        } catch (e: Exception) { }
         Toast.makeText(this, message, Toast.LENGTH_LONG).show()
     }
 
-    inner class ChatBridge {
-        @JavascriptInterface
-        fun receiveChatData(json: String) {
-            lifecycleScope.launch(Dispatchers.IO) {
-                val result = try {
-                    val (title, url, messages) = parsePayload(json)
-                    if (messages.isEmpty()) "কোনো টেক্সট পাওয়া যায়নি! চ্যাটটি সম্পূর্ণ লোড হয়েছে কিনা দেখুন।"
-                    else {
-                        val fileName = "Chat_Export_${SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())}.pdf"
-                        "✅ PDF সেভ হয়েছে: " + generateAndSavePdf(title, url, messages, fileName)
-                    }
-                } catch (e: Exception) {
-                    "এক্সপোর্ট ব্যর্থ: ${e.message}"
-                }
-                withContext(Dispatchers.Main) { finishExport(result) }
-            }
+    private suspend fun evalJs(js: String): String? = suspendCancellableCoroutine { cont ->
+        try {
+            webView.evaluateJavascript(js) { v -> if (!cont.isCompleted) cont.resume(v) }
+        } catch (e: Exception) {
+            if (!cont.isCompleted) cont.resume(null)
         }
     }
 
-    private fun parsePayload(json: String): Triple<String, String, List<ChatMessage>> {
-        val obj = JSONObject(json)
-        val title = obj.optString("title", "Chat Export")
-        val url = obj.optString("url", "")
-        val list = mutableListOf<ChatMessage>()
-        val arr = obj.optJSONArray("messages")
-        if (arr != null) {
-            for (i in 0 until arr.length()) {
-                val m = arr.optJSONObject(i) ?: continue
-                val text = m.optString("text", "").trim()
-                val mediaArr = m.optJSONArray("media")
-                val mediaList = mutableListOf<MediaItem>()
-                if (mediaArr != null) {
-                    for (j in 0 until mediaArr.length()) {
-                        val mObj = mediaArr.optJSONObject(j) ?: continue
-                        val type = mObj.optString("type")
-                        val data = mObj.optString("data")
-                        val w = mObj.optDouble("w", 0.0).toFloat()
-                        val h = mObj.optDouble("h", 0.0).toFloat()
-                        mediaList.add(MediaItem(type, data, w, h))
-                    }
-                }
-                if (text.isNotEmpty() || mediaList.isNotEmpty()) {
-                    val role = if (m.optString("role", "ai") == "user") "user" else "ai"
-                    list.add(ChatMessage(role, text, mediaList))
-                }
-            }
+    //==========================================
+    // পুরো পেজ স্ক্রিনশট হিসেবে ক্যাপচার + PDF
+    //==========================================
+    private suspend fun captureAndBuildPdf(): String {
+        val helper = withContext(Dispatchers.IO) {
+            assets.open("capture_helper.js").bufferedReader().use { it.readText() }
         }
-        return Triple(title, url, list)
-    }
+        evalJs(helper)
+        delay(300)
 
-    private fun prepareCode(code: String): String {
-        val sb = StringBuilder()
-        val lines = code.replace("\t", "    ").split("\n")
-        for ((i, line) in lines.withIndex()) {
-            if (i > 0) sb.append('\n')
-            var n = 0
-            while (n < line.length && line[n] == ' ') n++
-            repeat(n) { sb.append('\u00A0') }
-            sb.append(line.substring(n))
+        val metricsRaw = evalJs("(window.__capMetrics ? window.__capMetrics() : ({sh:0,ch:0,top:0,left:0,w:0,h:0}))") ?: ""
+        val m = try { JSONObject(metricsRaw) } catch (e: Exception) { null }
+        val d = resources.displayMetrics.density
+
+        var shCss = m?.optInt("sh", 0) ?: 0
+        val chCss = m?.optInt("ch", 0) ?: 0
+        var topDev = ((m?.optDouble("top", 0.0) ?: 0.0) * d).toInt()
+        var leftDev = ((m?.optDouble("left", 0.0) ?: 0.0) * d).toInt()
+        var wDev = ((m?.optDouble("w", 0.0) ?: 0.0) * d).toInt()
+        var hDev = ((m?.optDouble("h", 0.0) ?: 0.0) * d).toInt()
+        if (wDev <= 0 || hDev <= 0) { wDev = webView.width; hDev = webView.height; topDev = 0; leftDev = 0 }
+        if (wDev <= 0 || hDev <= 0) return "WebView প্রস্তুত নয় — আবার চেষ্টা করুন।"
+        if (shCss <= 0 || chCss <= 0) shCss = (hDev / d).toInt()
+        val shDev = (shCss * d).toInt()
+
+        // FAB লুকিয়ে নিই যেন স্ক্রিনশটে না আসে
+        try { fab.hide() } catch (e: Exception) { }
+        delay(350)
+
+        // ধাপ ১: আগে একবার পুরো পেজ স্ক্রল করে lazy ছবি লোড করিয়ে নিই
+        var y = 0
+        var guard = 0
+        val step = maxOf(300, (chCss * 0.8).toInt())
+        while (y < shCss && guard < 120) {
+            evalJs("window.__capScroll && window.__capScroll($y)")
+            delay(100)
+            y += step
+            guard++
         }
-        return sb.toString().trimEnd()
-    }
+        evalJs("window.__capScroll && window.__capScroll(0)")
+        delay(500)
 
-    private fun splitSegments(raw: String, media: List<MediaItem>): List<Seg> {
-        val out = mutableListOf<Seg>()
-        var i = 0
-        while (i < raw.length) {
-            val stCode = raw.indexOf(codeStart, i)
-            val stMedia = raw.indexOf(mediaStart, i)
-            
-            val st = when {
-                stCode < 0 && stMedia < 0 -> -1
-                stCode < 0 -> stMedia
-                stMedia < 0 -> stCode
-                else -> minOf(stCode, stMedia)
-            }
-            
-            if (st < 0) {
-                raw.substring(i).trim().takeIf { it.isNotEmpty() }?.let { out.add(Seg(it, false)) }
-                break
-            }
-            
-            raw.substring(i, st).trim().takeIf { it.isNotEmpty() }?.let { out.add(Seg(it, false)) }
-            
-            if (st == stCode && st >= 0) {
-                val en = raw.indexOf(codeEnd, st + 1)
-                val code = if (en < 0) raw.substring(st + 1) else raw.substring(st + 1, en)
-                prepareCode(code).takeIf { it.isNotBlank() }?.let { out.add(Seg(it, true)) }
-                i = if (en < 0) raw.length else en + 1
-            } else if (st == stMedia && st >= 0) {
-                val en = raw.indexOf(mediaEnd, st + 1)
-                val idxStr = if (en < 0) raw.substring(st + 1) else raw.substring(st + 1, en)
-                val idx = idxStr.trim().toIntOrNull() ?: -1
-                if (idx >= 0 && idx < media.size) {
-                    out.add(Seg("", false, idx))
-                }
-                i = if (en < 0) raw.length else en + 1
-            } else {
-                i = st + 1
-            }
-        }
-        return out
-    }
-
-    private fun buildTextPaint(bold: Boolean, size: Float, color: Int, mono: Boolean = false): TextPaint {
-        val paint = TextPaint(Paint.ANTI_ALIAS_FLAG or Paint.SUBPIXEL_TEXT_FLAG)
-        paint.textSize = size
-        paint.color = color
-        val family = if (mono) Typeface.MONOSPACE else Typeface.SANS_SERIF
-        paint.typeface = Typeface.create(family, if (bold) Typeface.BOLD else Typeface.NORMAL)
-        return paint
-    }
-
-    private fun layoutOf(text: String, paint: TextPaint, width: Int, isCode: Boolean): StaticLayout {
-        return StaticLayout.Builder.obtain(text, 0, text.length, paint, if (width < 40) 40 else width)
-            .setAlignment(Layout.Alignment.ALIGN_NORMAL)
-            .setLineSpacing(0f, if (isCode) 1.1f else 1.15f)
-            .setIncludePad(false)
-            .setBreakStrategy(Layout.BREAK_STRATEGY_SIMPLE)
-            .setHyphenationFrequency(Layout.HYPHENATION_FREQUENCY_NONE)
-            .build()
-    }
-
-    private fun drawMedia(canvas: Canvas, item: MediaItem, x: Float, y: Float, maxWidth: Int) {
-        if (item.type == "img") {
-            val bitmap = try {
-                if (item.data.startsWith("data:image")) {
-                    val base64Data = item.data.substring(item.data.indexOf(",") + 1)
-                    val decodedBytes = android.util.Base64.decode(base64Data, android.util.Base64.DEFAULT)
-                    android.graphics.BitmapFactory.decodeByteArray(decodedBytes, 0, decodedBytes.size)
+        // ধাপ ২: উপর থেকে নিচে অংশে অংশে স্ক্রিনশট
+        val captures = mutableListOf<Pair<Int, Bitmap>>()
+        var capturedUpTo = 0
+        guard = 0
+        val maxScrollDev = maxOf(0, shDev - hDev)
+        while (capturedUpTo < shDev && guard < 80) {
+            val scrollDev = minOf(capturedUpTo, maxScrollDev)
+            evalJs("window.__capScroll && window.__capScroll(${(scrollDev / d).toInt()})")
+            delay(300)
+            val full = captureRegion(leftDev, topDev, wDev, hDev)
+            if (full == null) { capturedUpTo += hDev; guard++; continue }
+            val offset = capturedUpTo - scrollDev
+            val newH = minOf(hDev - offset, shDev - capturedUpTo)
+            if (newH > 10) {
+                val piece = try { Bitmap.createBitmap(full, 0, offset, wDev, newH) } catch (e: Exception) { null }
+                if (piece != null) {
+                    captures.add(capturedUpTo to piece)
+                    if (piece !== full) full.recycle()
+                    capturedUpTo += newH
                 } else {
-                    val url = URL(item.data)
-                    val connection = url.openConnection() as HttpURLConnection
-                    connection.doInput = true
-                    connection.connect()
-                    val input = connection.inputStream
-                    android.graphics.BitmapFactory.decodeStream(input)
+                    full.recycle()
+                    capturedUpTo += newH
                 }
-            } catch (e: Exception) {
-                null
-            }
-            
-            if (bitmap != null) {
-                var w = bitmap.width
-                var h = bitmap.height
-                if (w > maxWidth) {
-                    val ratio = maxWidth.toFloat() / w
-                    w = maxWidth
-                    h = (h * ratio).toInt()
-                }
-                val dest = RectF(x, y, x + w, y + h)
-                canvas.drawBitmap(bitmap, null, dest, null)
             } else {
-                val p = TextPaint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.GRAY; textSize = 12f }
-                canvas.drawText("[ছবি লোড করা যায়নি]", x, y + 20f, p)
+                full.recycle()
+                capturedUpTo += hDev
             }
-        } else if (item.type == "svg") {
-            try {
-                val svg = SVG.getFromString(item.data)
-                
-                val docWidth = svg.documentWidth
-                val docHeight = svg.documentHeight
-                
-                var w = if (docWidth > 0) docWidth else maxWidth.toFloat()
-                var h = if (docHeight > 0) docHeight else w
-                
-                if (w <= 0f) w = maxWidth.toFloat()
-                if (h <= 0f) h = w
-                
-                if (w > maxWidth) {
-                    val ratio = maxWidth.toFloat() / w
-                    w = maxWidth.toFloat()
-                    h = (h * ratio)
-                }
-                
-                val picture = Picture()
-                val picCanvas = picture.beginRecording(w.toInt(), h.toInt())
-                svg.renderToCanvas(picCanvas, RectF(0f, 0f, w, h))
-                picture.endRecording()
-                
-                canvas.save()
-                canvas.translate(x, y)
-                picture.draw(canvas)
-                canvas.restore()
-                
-            } catch (e: Exception) {
-                val p = TextPaint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.GRAY; textSize = 12f }
-                canvas.drawText("[SVG রেন্ডার করা যায়নি]", x, y + 20f, p)
-            }
+            guard++
         }
+
+        if (captures.isEmpty()) return "কোনো ছবি ক্যাপচার করা যায়নি! পেজটি লোড হয়েছে কিনা দেখুন।"
+
+        // ধাপ ৩: মেমোরি নিরাপত্তার জন্য প্রয়োজনে ছোট করা
+        val totalDevH = capturedUpTo
+        var f = 1f
+        if (wDev > 1200) f = 1200f / wDev
+        val bytes = wDev.toDouble() * totalDevH.toDouble() * 2.0 * (f.toDouble() * f.toDouble())
+        val cap = 28_000_000.0
+        if (bytes > cap) f = (f * Math.sqrt(cap / bytes)).toFloat()
+        val scaled = mutableListOf<Pair<Int, Bitmap>>()
+        for ((start, bmp) in captures) {
+            val nw = (bmp.width * f).toInt().coerceAtLeast(1)
+            val nh = (bmp.height * f).toInt().coerceAtLeast(1)
+            val sb = if (nw != bmp.width || nh != bmp.height) {
+                val s = Bitmap.createScaledBitmap(bmp, nw, nh, true)
+                bmp.recycle()
+                s
+            } else bmp
+            scaled.add((start * f).toInt() to sb)
+        }
+        captures.clear()
+
+        // ধাপ ৪: PDF তৈরি
+        val title = webView.title ?: "Web Export"
+        val url = webView.url ?: ""
+        val fileName = "Chat_Export_${SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())}.pdf"
+        val saved = try {
+            withContext(Dispatchers.IO) { buildPdf(title, url, scaled, fileName) }
+        } finally {
+            for ((_, b) in scaled) { try { b.recycle() } catch (e: Exception) { } }
+            scaled.clear()
+        }
+        return "✅ PDF সেভ হয়েছে: $saved"
     }
 
-    private fun generateAndSavePdf(
-        chatTitle: String,
-        chatUrl: String,
-        messages: List<ChatMessage>,
-        fileName: String
-    ): String {
+    private suspend fun captureRegion(left: Int, top: Int, w: Int, h: Int): Bitmap? {
+        if (w <= 0 || h <= 0) return null
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val bmp = suspendCancellableCoroutine<Bitmap?> { cont ->
+                try {
+                    val b = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+                    val loc = IntArray(2)
+                    webView.getLocationInWindow(loc)
+                    val rect = Rect(loc[0] + left, loc[1] + top, loc[0] + left + w, loc[1] + top + h)
+                    PixelCopy.request(window, rect, b, { result ->
+                        if (result == PixelCopy.SUCCESS) { if (!cont.isCompleted) cont.resume(b) }
+                        else { b.recycle(); if (!cont.isCompleted) cont.resume(null) }
+                    }, Handler(Looper.getMainLooper()))
+                } catch (e: Exception) {
+                    if (!cont.isCompleted) cont.resume(null)
+                }
+            }
+            if (bmp != null) return bmp
+        }
+        return softwareCapture(left, top, w, h)
+    }
+
+    private fun softwareCapture(left: Int, top: Int, w: Int, h: Int): Bitmap? = try {
+        val old = webView.layerType
+        webView.setLayerType(View.LAYER_TYPE_SOFTWARE, null)
+        val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        val c = Canvas(bmp)
+        c.drawColor(Color.WHITE)
+        c.translate(-left.toFloat(), -top.toFloat())
+        webView.draw(c)
+        webView.setLayerType(old, null)
+        bmp
+    } catch (e: Exception) { null }
+
+    private fun buildPdf(title: String, url: String, caps: List<Pair<Int, Bitmap>>, fileName: String): String {
         val pdfDocument = PdfDocument()
-
-        val userBgColor = Color.parseColor("#E8F5E9")
-        val aiBgColor = Color.parseColor("#ECEFF1")
-        val userBarColor = Color.parseColor("#2E7D32")
-        val aiBarColor = Color.parseColor("#1565C0")
-
-        val headerPaint = buildTextPaint(true, 15f, Color.parseColor("#0D47A1"))
-        val smallPaint = buildTextPaint(false, 9f, Color.parseColor("#757575"))
-        val userTitlePaint = buildTextPaint(true, 12.5f, Color.parseColor("#1B5E20"))
-        val aiTitlePaint = buildTextPaint(true, 12.5f, Color.parseColor("#0D47A1"))
-        val bodyPaint = buildTextPaint(false, 11.5f, Color.parseColor("#212121"))
-        val codePaint = buildTextPaint(false, 9.3f, Color.parseColor("#102027"), mono = true)
-        val codeBgPaint = Paint().apply { color = Color.parseColor("#F4F5F7") }
-        val codeBarPaint = Paint().apply { color = Color.parseColor("#90A4AE") }
+        val headerPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
+            textSize = 14f; color = Color.parseColor("#0D47A1")
+            typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
+        }
+        val smallPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply { textSize = 9f; color = Color.parseColor("#757575") }
         val dividerPaint = Paint().apply { color = Color.parseColor("#BDBDBD"); strokeWidth = 1f }
 
-        var pageNumber = 1
-        var page = pdfDocument.startPage(PdfDocument.PageInfo.Builder(pageWidth, pageHeight, pageNumber).create())
-        var canvas: Canvas = page.canvas
-        var cursorY = marginTop
+        val scaledW = caps.first().second.width
+        val ptPerPx = contentWidth / scaledW.toFloat()
+        val totalH = caps.last().first + caps.last().second.height
 
-        fun drawFooter() {
-            val label = "Page $pageNumber"
+        var pageNum = 1
+        var cursor = 0
+        var first = true
+
+        while (cursor < totalH && pageNum <= 60) {
+            val page = pdfDocument.startPage(PdfDocument.PageInfo.Builder(pageWidth, pageHeight, pageNum).create())
+            val canvas = page.canvas
+            var imgTop = marginTop
+
+            if (first) {
+                val safeTitle = title.ifBlank { "Web Export" }
+                val tl = StaticLayout.Builder.obtain(safeTitle, 0, safeTitle.length, headerPaint, contentWidth.toInt()).build()
+                canvas.save(); canvas.translate(marginLeft, imgTop); tl.draw(canvas); canvas.restore()
+                imgTop += tl.height + 6f
+                val dateStr = SimpleDateFormat("dd MMM yyyy, hh:mm a", Locale.US).format(Date())
+                val info = (if (url.isNotBlank()) "$url\n" else "") + "Exported: $dateStr"
+                val il = StaticLayout.Builder.obtain(info, 0, info.length, smallPaint, contentWidth.toInt()).build()
+                canvas.save(); canvas.translate(marginLeft, imgTop); il.draw(canvas); canvas.restore()
+                imgTop += il.height + 8f
+                canvas.drawLine(marginLeft, imgTop, marginLeft + contentWidth, imgTop, dividerPaint)
+                imgTop += 10f
+            }
+
+            val availH = pageHeight - marginBottom - imgTop
+            val pagePx = (availH / ptPerPx).toInt()
+            val end = minOf(cursor + pagePx, totalH)
+
+            for ((start, bmp) in caps) {
+                val bEnd = start + bmp.height
+                if (bEnd <= cursor || start >= end) continue
+                val oS = maxOf(cursor, start)
+                val oE = minOf(end, bEnd)
+                val src = Rect(0, oS - start, bmp.width, oE - start)
+                val dst = RectF(
+                    marginLeft,
+                    imgTop + (oS - cursor) * ptPerPx,
+                    marginLeft + contentWidth,
+                    imgTop + (oE - cursor) * ptPerPx
+                )
+                canvas.drawBitmap(bmp, src, dst, null)
+            }
+
+            val label = "Page $pageNum"
             canvas.drawText(label, (pageWidth - smallPaint.measureText(label)) / 2f, pageHeight - 20f, smallPaint)
-        }
-
-        fun startNewPage() {
-            drawFooter()
             pdfDocument.finishPage(page)
-            pageNumber++
-            page = pdfDocument.startPage(PdfDocument.PageInfo.Builder(pageWidth, pageHeight, pageNumber).create())
-            canvas = page.canvas
-            cursorY = marginTop
+
+            cursor = end
+            first = false
+            pageNum++
         }
 
-        val safeTitle = chatTitle.ifBlank { "Chat Export" }
-        val titleLayout = layoutOf(safeTitle, headerPaint, contentWidth.toInt(), false)
-        canvas.save(); canvas.translate(marginLeft, cursorY); titleLayout.draw(canvas); canvas.restore()
-        cursorY += titleLayout.height + 6f
-
-        val dateStr = SimpleDateFormat("dd MMM yyyy, hh:mm a", Locale.US).format(Date())
-        val infoText = (if (chatUrl.isNotBlank()) "$chatUrl\n" else "") +
-            "Exported: $dateStr  |  Total messages: ${messages.size}"
-        val infoLayout = layoutOf(infoText, smallPaint, contentWidth.toInt(), false)
-        canvas.save(); canvas.translate(marginLeft, cursorY); infoLayout.draw(canvas); canvas.restore()
-        cursorY += infoLayout.height + 8f
-
-        canvas.drawLine(marginLeft, cursorY, marginLeft + contentWidth, cursorY, dividerPaint)
-        cursorY += 24f
-
-        val barWidth = 6f
-        val padding = 14f
-        val innerWidth = contentWidth - barWidth - (padding * 2)
-        val codeInset = 6f
-
-        var questionNo = 0
-        var answerNo = 0
-
-        for (msg in messages) {
-            if (msg.text.isBlank() && msg.media.isEmpty()) continue
-            val isUser = msg.role == "user"
-            if (isUser) questionNo++ else answerNo++
-
-            val label = if (isUser) "USER  |  প্রশ্ন #$questionNo" else "AI  |  উত্তর #$answerNo"
-            val bgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = if (isUser) userBgColor else aiBgColor }
-            val barPaint = Paint().apply { color = if (isUser) userBarColor else aiBarColor }
-            val titlePaint = if (isUser) userTitlePaint else aiTitlePaint
-
-            val labelLayout = layoutOf(label, titlePaint, innerWidth.toInt(), false)
-
-            val items = mutableListOf<LineItem>()
-            for (seg in splitSegments(msg.text, msg.media)) {
-                if (seg.isCode) {
-                    if (seg.text.isBlank()) continue
-                    val paint = codePaint
-                    val w = (innerWidth - codeInset * 2).toInt()
-                    val lay = layoutOf(seg.text, paint, w, true)
-                    for (l in 0 until lay.lineCount) {
-                        items.add(LineItem(lay, l, true, (lay.getLineBottom(l) - lay.getLineTop(l)).toFloat()))
-                    }
-                } else if (seg.mediaIndex >= 0) {
-                    val mItem = msg.media[seg.mediaIndex]
-                    val maxW = innerWidth.toInt()
-                    val aspect = if (mItem.w > 0 && mItem.h > 0) mItem.h / mItem.w else 1f
-                    var imgW = maxW
-                    if (mItem.w > 0 && mItem.w < maxW) {
-                        imgW = mItem.w.toInt()
-                    }
-                    val imgH = (imgW * aspect).toInt()
-                    items.add(LineItem(null, 0, false, imgH.toFloat(), seg.mediaIndex))
-                } else {
-                    if (seg.text.isBlank()) continue
-                    val lay = layoutOf(seg.text, bodyPaint, innerWidth.toInt(), false)
-                    for (l in 0 until lay.lineCount) {
-                        items.add(LineItem(lay, l, false, (lay.getLineBottom(l) - lay.getLineTop(l)).toFloat()))
-                    }
-                }
-            }
-            if (items.isEmpty()) continue
-
-            var pos = 0
-            var firstChunk = true
-
-            while (pos < items.size) {
-                val available = (pageHeight - marginBottom) - cursorY
-                val labelH = if (firstChunk) labelLayout.height + 8f else 0f
-
-                var count = 0
-                var textH = 0f
-                while (pos + count < items.size) {
-                    val h = items[pos + count].height
-                    if (padding * 2 + labelH + textH + h > available && (!firstChunk || count > 0)) break
-                    textH += h
-                    count++
-                }
-
-                if (count == 0) {
-                    if (cursorY > marginTop + 2f) { startNewPage(); continue }
-                    count = 1
-                    textH = items[pos].height
-                }
-
-                val chunkH = padding * 2 + labelH + textH
-                canvas.drawRoundRect(RectF(marginLeft, cursorY, marginLeft + contentWidth, cursorY + chunkH), 10f, 10f, bgPaint)
-                canvas.drawRect(RectF(marginLeft, cursorY, marginLeft + barWidth, cursorY + chunkH), barPaint)
-
-                var y = cursorY + padding
-                val xBase = marginLeft + barWidth + padding
-
-                if (firstChunk) {
-                    canvas.save(); canvas.translate(xBase, y); labelLayout.draw(canvas); canvas.restore()
-                    y += labelH
-                }
-
-                for (k in 0 until count) {
-                    val item = items[pos + k]
-                    if (item.isCode) {
-                        canvas.drawRect(RectF(xBase - 2f, y, marginLeft + contentWidth - padding + 2f, y + item.height), codeBgPaint)
-                        canvas.drawRect(RectF(xBase - 2f, y, xBase + 1f, y + item.height), codeBarPaint)
-                    }
-                    
-                    if (item.mediaIndex >= 0) {
-                        val mItem = msg.media[item.mediaIndex]
-                        drawMedia(canvas, mItem, xBase, y, innerWidth.toInt())
-                    } else if (item.layout != null) {
-                        val top = item.layout.getLineTop(item.line).toFloat()
-                        canvas.save()
-                        canvas.translate(xBase + (if (item.isCode) codeInset else 0f), y)
-                        canvas.translate(0f, -top)
-                        canvas.clipRect(0f, top, innerWidth, top + item.height)
-                        item.layout.draw(canvas)
-                        canvas.restore()
-                    }
-                    y += item.height
-                }
-
-                cursorY += chunkH
-                pos += count
-                firstChunk = false
-
-                if (pos < items.size) {
-                    startNewPage()
-                } else {
-                    cursorY += 10f
-                    if (cursorY < pageHeight - marginBottom - 30f) {
-                        canvas.drawLine(marginLeft + 40f, cursorY, marginLeft + contentWidth - 40f, cursorY, dividerPaint)
-                    }
-                    cursorY += 16f
-                }
-            }
-        }
-
-        drawFooter()
-        pdfDocument.finishPage(page)
         val savedPath = writePdfToPublicDownloads(pdfDocument, fileName)
         pdfDocument.close()
         return savedPath
