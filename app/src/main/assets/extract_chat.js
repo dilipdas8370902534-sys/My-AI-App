@@ -1,18 +1,18 @@
 (function () {
     "use strict";
 
-    var CS = '\uE000', CE = '\uE001';   // কোড ব্লকের শুরু/শেষ মার্কার
+    var CS = '\uE000', CE = '\uE001';
+    var MS = '\uE002', ME = '\uE003';
 
     var CODE_SEL = 'pre, code-block, md-code-block, .code-block, [class*="code-block"], [class*="codeBlock"], .highlight';
     var LINENUM_SEL = '.line-numbers-rows,.hljs-ln-numbers,.hljs-ln-n,.CodeMirror-linenumber,.cm-lineNumbers,.gutter,[class*="line-number"],[class*="lineNumber"],[data-line-number]';
-    var JUNK_SEL = 'script,style,noscript,svg,canvas,iframe,input,textarea,select,button,nav,header,footer,[role="button"],[class*="copy"],[class*="Copy"],[class*="share"],[class*="toolbar"],[class*="Toolbar"],[class*="feedback"],[class*="tooltip"]';
+    var JUNK_SEL = 'script,style,noscript,iframe,input,textarea,select,button,nav,header,footer,[role="button"],[class*="copy"],[class*="Copy"],[class*="share"],[class*="toolbar"],[class*="Toolbar"],[class*="feedback"],[class*="tooltip"]';
 
     function isVisible(el) {
         if (!el || el.nodeType !== 1) return true;
         return !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
     }
 
-    // লাইভ DOM থেকে কোড পড়ি — innerText লাইন ব্রেক ঠিক রাখে
     function getCodeText(box) {
         var codeEl = box.querySelector('code') || box;
         var hide = codeEl.querySelectorAll(LINENUM_SEL + ',button,svg');
@@ -24,10 +24,76 @@
         return txt.replace(/\u00a0/g, ' ').replace(/[ \t]+$/gm, '').replace(/^\n+|\n+$/g, '');
     }
 
+    function extractMediaData(el) {
+        if (!el) return null;
+        var tag = el.tagName.toLowerCase();
+        
+        if (tag === 'mjx-container' || tag === 'math' || tag === 'figure') {
+            var innerSvg = el.querySelector('svg');
+            if (innerSvg) return extractMediaData(innerSvg);
+            var innerImg = el.querySelector('img');
+            if (innerImg) return extractMediaData(innerImg);
+            var innerCanvas = el.querySelector('canvas');
+            if (innerCanvas) return extractMediaData(innerCanvas);
+        }
+
+        if (tag === 'img' || tag === 'picture') {
+            var img = (tag === 'picture') ? el.querySelector('img') : el;
+            if (!img) return null;
+            if (img.src && img.src.startsWith('data:image')) return { type: 'img', data: img.src, w: img.naturalWidth || img.width, h: img.naturalHeight || img.height };
+            if (img.src) {
+                try {
+                    var c = document.createElement('canvas');
+                    c.width = img.naturalWidth || img.width;
+                    c.height = img.naturalHeight || img.height;
+                    if (c.width > 0 && c.height > 0) {
+                        var ctx = c.getContext('2d');
+                        ctx.drawImage(img, 0, 0, c.width, c.height);
+                        return { type: 'img', data: c.toDataURL('image/png'), w: c.width, h: c.height };
+                    }
+                } catch(e) {}
+                return { type: 'img', data: img.src, w: img.naturalWidth || img.width, h: img.naturalHeight || img.height };
+            }
+        } else if (tag === 'svg') {
+            try {
+                var rect = el.getBoundingClientRect();
+                if (rect.width < 30 || rect.height < 30) return null;
+                var cls = (el.className && typeof el.className.baseVal === 'string') ? el.className.baseVal.toLowerCase() : ((typeof el.className === 'string') ? el.className.toLowerCase() : '');
+                if (cls.indexOf('icon') !== -1 || cls.indexOf('copy') !== -1 || cls.indexOf('thumb') !== -1 || cls.indexOf('feedback') !== -1) return null;
+                
+                var serializer = new XMLSerializer();
+                var svgStr = serializer.serializeToString(el);
+                if (svgStr.indexOf('xmlns=') === -1) {
+                    svgStr = svgStr.replace('<svg', '<svg xmlns="http://www.w3.org/2000/svg"');
+                }
+                return { type: 'svg', data: svgStr, w: rect.width, h: rect.height };
+            } catch(e) {}
+        } else if (tag === 'canvas') {
+            try {
+                return { type: 'img', data: el.toDataURL('image/png'), w: el.width, h: el.height };
+            } catch(e) {}
+        }
+        return null;
+    }
+
     function cleanText(node) {
         var i, j;
 
-        // ধাপ ১: জাঙ্ক মোছার আগেই কোড ব্লক আলাদা করে সেভ করি
+        var MEDIA_SEL = 'img, svg, canvas, mjx-container, math, picture, figure';
+        var mediaNodes = node.querySelectorAll(MEDIA_SEL);
+        var mediaList = [], mediaTagged = [];
+        for (i = 0; i < mediaNodes.length; i++) {
+            var m = mediaNodes[i], skip = false;
+            for (j = 0; j < mediaTagged.length; j++) { if (mediaTagged[j].contains(m)) { skip = true; break; } }
+            if (skip) continue;
+            var data = extractMediaData(m);
+            if (!data) continue;
+            var idx = mediaList.length;
+            mediaList.push(data);
+            m.setAttribute('data-mx', String(idx));
+            mediaTagged.push(m);
+        }
+
         var boxes = node.querySelectorAll(CODE_SEL);
         var codes = [], tagged = [];
         for (i = 0; i < boxes.length; i++) {
@@ -44,7 +110,6 @@
         var clone = node.cloneNode(true);
         for (i = 0; i < tagged.length; i++) tagged[i].removeAttribute('data-cx');
 
-        // ধাপ ২: ক্লোনে কোডের জায়গায় মার্কারসহ টেক্সট বসাই
         var marks = clone.querySelectorAll('[data-cx]');
         for (i = 0; i < marks.length; i++) {
             var idx = parseInt(marks[i].getAttribute('data-cx'), 10);
@@ -52,16 +117,21 @@
             marks[i].parentNode.replaceChild(tn, marks[i]);
         }
 
-        // ধাপ ৩: এখন জাঙ্ক সরাই (কোড আর হারাবে না)
+        var mmarks = clone.querySelectorAll('[data-mx]');
+        for (i = 0; i < mmarks.length; i++) {
+            var idx = parseInt(mmarks[i].getAttribute('data-mx'), 10);
+            var tn = document.createTextNode('\n' + MS + idx + ME + '\n');
+            mmarks[i].parentNode.replaceChild(tn, mmarks[i]);
+        }
+
         var junk = clone.querySelectorAll(JUNK_SEL);
         for (i = 0; i < junk.length; i++) {
             var el = junk[i];
             if (!el.parentNode) continue;
-            if (el.textContent && el.textContent.indexOf(CS) !== -1) continue; // কোড ধরে রাখা র‍্যাপার বাদ দেই না
+            if (el.textContent && (el.textContent.indexOf(CS) !== -1 || el.textContent.indexOf(MS) !== -1)) continue;
             el.parentNode.removeChild(el);
         }
 
-        // ইনলাইন কোড ব্যাকটিকে
         var inline = clone.querySelectorAll('code');
         for (i = 0; i < inline.length; i++) {
             var it = (inline[i].textContent || '').trim();
@@ -78,10 +148,10 @@
         for (i = 0; i < blocks.length; i++) blocks[i].appendChild(document.createTextNode('\n'));
 
         var out = clone.textContent || '';
-        return out.replace(/\u00a0/g, ' ')
-            .replace(/[ \t]+\n/g, '\n')
-            .replace(/\n{3,}/g, '\n\n')
-            .trim();
+        return {
+            text: out.replace(/\u00a0/g, ' ').replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim(),
+            media: mediaList
+        };
     }
 
     function byDocOrder(a, b) {
@@ -101,11 +171,14 @@
         return '';
     }
 
-    function pushMsg(list, role, text) {
-        if (!text || text.length < 2) return;
-        if (list.length && list[list.length - 1].text === text) return;
-        if (list.length && list[list.length - 1].role === role) list[list.length - 1].text += '\n' + text;
-        else list.push({ role: role, text: text });
+    function pushMsg(list, role, text, media) {
+        if ((!text || text.length < 2) && (!media || media.length === 0)) return;
+        if (list.length && list[list.length - 1].text === text && (!media || media.length === 0)) return;
+        if (list.length && list[list.length - 1].role === role) {
+            list[list.length - 1].text += '\n' + text;
+            list[list.length - 1].media = list[list.length - 1].media.concat(media || []);
+        }
+        else list.push({ role: role, text: text || "", media: media || [] });
     }
 
     function extract() {
@@ -116,9 +189,11 @@
             roleNodes.sort(byDocOrder);
             for (i = 0; i < roleNodes.length; i++) {
                 if (!isVisible(roleNodes[i])) continue;
-                t = cleanText(roleNodes[i]);
+                var res = cleanText(roleNodes[i]);
+                t = res.text;
+                var media = res.media;
                 r = (roleNodes[i].getAttribute('data-message-author-role') || '').toLowerCase() === 'user' ? 'user' : 'ai';
-                pushMsg(messages, r, t);
+                pushMsg(messages, r, t, media);
             }
         }
 
@@ -130,23 +205,26 @@
             nodes.sort(byDocOrder);
             var expectUser = true;
             for (i = 0; i < nodes.length; i++) {
-                t = cleanText(nodes[i]);
-                if (t.length < 2) continue;
+                var res = cleanText(nodes[i]);
+                t = res.text;
+                var media = res.media;
+                if (t.length < 2 && media.length === 0) continue;
                 r = guessRole(nodes[i]) || (expectUser ? 'user' : 'ai');
-                pushMsg(messages, r, t);
+                pushMsg(messages, r, t, media);
                 expectUser = (r !== 'user');
             }
         }
 
-        // শেষ উপায়: পুরো বডি, তবু কোড ব্লক আলাদা করে রেখেই
         if (!messages.length) {
-            var whole = cleanText(document.body);
+            var res = cleanText(document.body);
+            var whole = res.text;
+            var media = res.media;
             var chunks = whole.split(/\n\n+/);
             var eu = true;
             for (i = 0; i < chunks.length; i++) {
                 t = chunks[i].trim();
-                if (t.length < 3) continue;
-                pushMsg(messages, eu ? 'user' : 'ai', t);
+                if (t.length < 3 && media.length === 0) continue;
+                pushMsg(messages, eu ? 'user' : 'ai', t, media);
                 eu = !eu;
             }
         }
@@ -161,7 +239,6 @@
         }
     }
 
-    // লম্বা চ্যাট virtualize করা থাকে — আগে স্ক্রল করে সব লোড করিয়ে নিই
     function findScroller() {
         var best = document.scrollingElement || document.body, bestH = 0;
         var all = document.querySelectorAll('div,main,section');
