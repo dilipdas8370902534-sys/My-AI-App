@@ -73,10 +73,10 @@ class MainActivity : AppCompatActivity() {
     private val marginTop = 40f
     private val marginBottom = 50f
     private val contentWidth get() = pageWidth - marginLeft - marginRight
-    private val codeStart = ''
-    private val codeEnd = ''
-    private val mediaStart = ''
-    private val mediaEnd = ''
+    private val codeStart = '\uE000'
+    private val codeEnd = '\uE001'
+    private val mediaStart = '\uE002'
+    private val mediaEnd = '\uE003'
     private val MEDIA_TOP_PADDING = 6f
     private val MEDIA_BOTTOM_PADDING = 8f
     private val PLACEHOLDER_TEXT_HEIGHT = 24f
@@ -173,7 +173,7 @@ class MainActivity : AppCompatActivity() {
     private fun hasStoragePermission(): Boolean {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) return true
         return ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_EXTERNAL_STORAGE) ==
-                PackageManager.PERMISSION_GRANTED
+            PackageManager.PERMISSION_GRANTED
     }
 
     private fun requestStoragePermission() {
@@ -204,7 +204,8 @@ class MainActivity : AppCompatActivity() {
         payloadBuf.setLength(0)
         fab.isEnabled = false
         fab.text = "পড়া হচ্ছে..."
-        Toast.makeText(this, "পুরো চ্যাট খোলা ও পড়া হচ্ছে, একটু সময় লাগবে...", Toast.LENGTH_SHORT).show()
+        Toast.makeText(this, "পুরো চ্যাট খুলা ও পড়া হচ্ছে, একটু সময় লাগবে...", Toast.LENGTH_SHORT).show()
+
         lifecycleScope.launch {
             val js = withContext(Dispatchers.IO) {
                 try { assets.open("extract_chat.js").bufferedReader().use { it.readText() } }
@@ -260,7 +261,7 @@ class MainActivity : AppCompatActivity() {
                         "✅ PDF সেভ হয়েছে: $path"
                     }
                 } catch (e: OutOfMemoryError) {
-                    "মেমরির অভাবে এক্সপোর্ট ব্যর্থ। অ্যাপ বন্ধ করে আবার চেষ্টা করুন।"
+                    "মেমরি অভাবে এক্সপোর্ট ব্যর্থ। অ্যাপ বন্ধ করে আবার চেষ্টা করুন।"
                 } catch (e: Exception) {
                     "এক্সপোর্ট ব্যর্থ: ${e.message ?: "অজানা এরর"}"
                 }
@@ -308,14 +309,12 @@ class MainActivity : AppCompatActivity() {
 
     private fun prepareCode(code: String): String {
         val sb = StringBuilder()
-        val lines = code.replace("	", "    ").split("
-")
+        val lines = code.replace("\t", "    ").split("\n")
         for ((i, line) in lines.withIndex()) {
-            if (i > 0) sb.append('
-')
+            if (i > 0) sb.append('\n')
             var n = 0
             while (n < line.length && line[n] == ' ') n++
-            repeat(n) { sb.append(' ') }
+            repeat(n) { sb.append('\u00A0') }
             sb.append(line.substring(n))
         }
         return sb.toString().trimEnd()
@@ -371,7 +370,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun layoutOf(text: String, paint: TextPaint, width: Int, isCode: Boolean): StaticLayout {
         val safeWidth = if (width < 40) 40 else width
-        val safeText = text.ifEmpty { " " }
+        val safeText = text.ifEmpty { "" }
         return StaticLayout.Builder.obtain(safeText, 0, safeText.length, paint, safeWidth)
             .setAlignment(Layout.Alignment.ALIGN_NORMAL)
             .setLineSpacing(0f, if (isCode) 1.1f else 1.15f)
@@ -596,9 +595,8 @@ class MainActivity : AppCompatActivity() {
             cursorY += titleLayout.height + 6f
 
             val dateStr = SimpleDateFormat("dd MMM yyyy, hh:mm a", Locale.US).format(Date())
-            val infoText = (if (chatUrl.isNotBlank()) "$chatUrl
-" else "") +
-                    "Exported: $dateStr | Total messages: ${messages.size}"
+            val infoText = (if (chatUrl.isNotBlank()) "$chatUrl\n" else "") +
+                "Exported: $dateStr | Total messages: ${messages.size}"
             val infoLayout = layoutOf(infoText, smallPaint, contentWidth.toInt(), false)
             canvas.save(); canvas.translate(marginLeft, cursorY); infoLayout.draw(canvas); canvas.restore()
             cursorY += infoLayout.height + 8f
@@ -616,21 +614,24 @@ class MainActivity : AppCompatActivity() {
                 if (msg.text.isBlank() && msg.media.isEmpty()) continue
                 val isUser = msg.role == "user"
                 if (isUser) questionNo++ else answerNo++
+
                 val bitmapCache = HashMap<Int, Bitmap?>()
                 val svgCache = HashMap<Int, SVG?>()
+
                 val label = if (isUser) "USER | #$questionNo" else "AI | উত্তর #$answerNo"
                 val bgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = if (isUser) userBgColor else aiBgColor }
                 val barPaint = Paint().apply { color = if (isUser) userBarColor else aiBarColor }
                 val titlePaint = if (isUser) userTitlePaint else aiTitlePaint
                 val labelLayout = layoutOf(label, titlePaint, innerWidth.toInt(), false)
+
                 val items = mutableListOf<LineItem>()
                 val segments = splitSegments(msg.text, msg.media)
                 val maxMediaHeight = (pageHeight - marginTop - marginBottom - padding * 2 -
-                        labelLayout.height - 8f - MEDIA_TOP_PADDING - MEDIA_BOTTOM_PADDING - 6f).coerceAtLeast(150f)
+                    labelLayout.height - 8f - MEDIA_TOP_PADDING - MEDIA_BOTTOM_PADDING - 6f).coerceAtLeast(150f)
 
                 if (segments.isEmpty() && msg.media.isNotEmpty()) {
                     for (mi in msg.media.indices) {
-                        val hh = measureMediaHeight(msg.media[mi], innerWidth.toFloat(), maxMediaHeight, bitmapCache, svgCache, mi)
+                        val hh = measureMediaHeight(msg.media[mi], innerWidth, maxMediaHeight, bitmapCache, svgCache, mi)
                         items.add(LineItem(null, 0, false, hh + MEDIA_TOP_PADDING + MEDIA_BOTTOM_PADDING, mi))
                     }
                 } else {
@@ -642,7 +643,7 @@ class MainActivity : AppCompatActivity() {
                                 items.add(LineItem(lay, l, true, (lay.getLineBottom(l) - lay.getLineTop(l)).toFloat()))
                             }
                         } else if (seg.mediaIndex >= 0 && seg.mediaIndex < msg.media.size) {
-                            val hh = measureMediaHeight(msg.media[seg.mediaIndex], innerWidth.toFloat(), maxMediaHeight, bitmapCache, svgCache, seg.mediaIndex)
+                            val hh = measureMediaHeight(msg.media[seg.mediaIndex], innerWidth, maxMediaHeight, bitmapCache, svgCache, seg.mediaIndex)
                             items.add(LineItem(null, 0, false, hh + MEDIA_TOP_PADDING + MEDIA_BOTTOM_PADDING, seg.mediaIndex))
                         } else {
                             if (seg.text.isBlank()) continue
@@ -655,6 +656,7 @@ class MainActivity : AppCompatActivity() {
                 }
 
                 if (items.isEmpty()) continue
+
                 var pos = 0
                 var firstChunk = true
                 while (pos < items.size) {
@@ -669,20 +671,24 @@ class MainActivity : AppCompatActivity() {
                         count++
                         if (count == 1 && padding * 2 + labelH + textH > available) break
                     }
+
                     if (padding * 2 + labelH + textH > available && cursorY > marginTop + 2f) {
                         startNewPage()
                         continue
                     }
                     if (count == 0) { count = 1; textH = items[pos].height.coerceAtLeast(1f) }
+
                     val chunkH = (padding * 2 + labelH + textH).coerceAtLeast(30f)
                     canvas.drawRoundRect(RectF(marginLeft, cursorY, marginLeft + contentWidth, cursorY + chunkH), 10f, 10f, bgPaint)
                     canvas.drawRect(RectF(marginLeft, cursorY, marginLeft + barWidth, cursorY + chunkH), barPaint)
+
                     var y = cursorY + padding
                     val xBase = marginLeft + barWidth + padding
                     if (firstChunk) {
                         canvas.save(); canvas.translate(xBase, y); labelLayout.draw(canvas); canvas.restore()
                         y += labelH
                     }
+
                     for (k in 0 until count) {
                         if (pos + k >= items.size) break
                         val item = items[pos + k]
@@ -691,7 +697,7 @@ class MainActivity : AppCompatActivity() {
                             canvas.drawRect(RectF(xBase - 2f, y, xBase + 1f, y + item.height), codeBarPaint)
                         }
                         if (item.mediaIndex >= 0 && item.mediaIndex < msg.media.size) {
-                            drawMedia(canvas, msg.media[item.mediaIndex], xBase, y + MEDIA_TOP_PADDING, innerWidth.toFloat(), maxMediaHeight, bitmapCache, svgCache, item.mediaIndex)
+                            drawMedia(canvas, msg.media[item.mediaIndex], xBase, y + MEDIA_TOP_PADDING, innerWidth, maxMediaHeight, bitmapCache, svgCache, item.mediaIndex)
                         } else if (item.layout != null) {
                             try {
                                 val top = item.layout.getLineTop(item.line).toFloat()
