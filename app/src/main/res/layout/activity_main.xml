@@ -19,7 +19,7 @@
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:layout_marginEnd="4dp"
-                android:text="Home"/>
+                android:text="Home" />
             <EditText
                 android:id="@+id/etUrl"
                 android:layout_width="0dp"
@@ -29,18 +29,18 @@
                 android:inputType="textUri"
                 android:background="@android:color/white"
                 android:padding="8dp"
-                android:maxLines="1"/>
+                android:maxLines="1" />
             <Button
                 android:id="@+id/btnLoad"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:layout_marginStart="4dp"
-                android:text="Load"/>
+                android:text="Load" />
         </LinearLayout>
         <WebView
             android:id="@+id/webView"
             android:layout_width="match_parent"
-            android:layout_height="match_parent"/>
+            android:layout_height="match_parent" />
     </LinearLayout>
     <com.google.android.material.floatingactionbutton.ExtendedFloatingActionButton
         android:id="@+id/fabExportPdf"
@@ -49,5 +49,5 @@
         android:layout_gravity="bottom|end"
         android:layout_margin="16dp"
         android:text="Export PDF"
-        app:icon="@android:drawable/ic_menu_save"/>
+        app:icon="@android:drawable/ic_menu_save" />
 </androidx.coordinatorlayout.widget.CoordinatorLayout>
