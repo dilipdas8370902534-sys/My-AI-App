@@ -3,10 +3,12 @@
     xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="match_parent">
+
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="match_parent"
         android:orientation="vertical">
+
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
@@ -14,12 +16,14 @@
             android:padding="8dp"
             android:background="#E0E0E0"
             android:gravity="center_vertical">
+
             <Button
                 android:id="@+id/btnHome"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:layout_marginEnd="4dp"
-                android:text="Home"/>
+                android:text="Home" />
+
             <EditText
                 android:id="@+id/etUrl"
                 android:layout_width="0dp"
@@ -31,19 +35,22 @@
                 android:padding="8dp"
                 android:maxLines="1"
                 android:textColor="#000000"
-                android:textColorHint="#888888"/>
+                android:textColorHint="#888888" />
+
             <Button
                 android:id="@+id/btnLoad"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:layout_marginStart="4dp"
-                android:text="Load"/>
+                android:text="Load" />
         </LinearLayout>
+
         <WebView
             android:id="@+id/webView"
             android:layout_width="match_parent"
-            android:layout_height="match_parent"/>
+            android:layout_height="match_parent" />
     </LinearLayout>
+
     <com.google.android.material.floatingactionbutton.ExtendedFloatingActionButton
         android:id="@+id/fabExportPdf"
         android:layout_width="wrap_content"
@@ -51,5 +58,5 @@
         android:layout_gravity="bottom|end"
         android:layout_margin="16dp"
         android:text="Export PDF"
-        app:icon="@android:drawable/ic_menu_save"/>
+        app:icon="@android:drawable/ic_menu_save" />
 </androidx.coordinatorlayout.widget.CoordinatorLayout>
