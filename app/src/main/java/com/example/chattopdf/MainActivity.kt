@@ -26,6 +26,7 @@ import android.view.inputmethod.InputMethodManager
 import android.webkit.CookieManager
 import android.webkit.JavascriptInterface
 import android.webkit.WebChromeClient
+import android.webkit.WebResourceRequest
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -59,35 +60,29 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnLoad: Button
     private lateinit var btnHome: Button
     private lateinit var fab: ExtendedFloatingActionButton
-
     private val storagePermissionCode = 1001
     private val homeUrl = "file:///android_asset/home.html"
-    
     @Volatile private var exporting = false
     @Volatile private var received = false
     @Volatile private var exportToken = 0
     private var pageUrlForExport = ""
     private var uaForExport = ""
-
     private val pageWidth = 595
     private val pageHeight = 842
-    private val marginLeft = 30f
-    private val marginRight = 30f
+    private val marginLeft = 22f
+    private val marginRight = 22f
     private val marginTop = 40f
     private val marginBottom = 50f
     private val contentWidth get() = pageWidth - marginLeft - marginRight
-
     private val codeStart = '\uE000'
     private val codeEnd = '\uE001'
     private val mediaStart = '\uE002'
     private val mediaEnd = '\uE003'
-
     private val MEDIA_TOP_PADDING = 6f
     private val MEDIA_BOTTOM_PADDING = 8f
     private val PLACEHOLDER_TEXT_HEIGHT = 24f
     private val MAX_DECODE_WIDTH_PX = 900
     private val BITMAP_BUDGET = 24 * 1024 * 1024L
-
     private val allBitmaps = mutableListOf<Bitmap>()
     private var bitmapBytes = 0L
     private val payloadBuf = StringBuilder()
@@ -95,19 +90,12 @@ class MainActivity : AppCompatActivity() {
     data class ChatMessage(val role: String, val text: String, val media: List<MediaItem> = emptyList())
     data class MediaItem(val type: String, val data: String, val w: Float, val h: Float)
     private data class Seg(val text: String, val isCode: Boolean, val mediaIndex: Int = -1)
-    private class LineItem(
-        val layout: StaticLayout?,
-        val line: Int,
-        val isCode: Boolean,
-        val height: Float,
-        val mediaIndex: Int = -1
-    )
+    private class LineItem(val layout: StaticLayout?, val line: Int, val isCode: Boolean, val height: Float, val mediaIndex: Int = -1)
     private data class SizeF(val width: Float, val height: Float)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
-
         webView = findViewById(R.id.webView)
         etUrl = findViewById(R.id.etUrl)
         btnLoad = findViewById(R.id.btnLoad)
@@ -135,11 +123,11 @@ class MainActivity : AppCompatActivity() {
         webView.isScrollbarFadingEnabled = true
         
         webView.webViewClient = object : WebViewClient() {
-            override fun shouldOverrideUrlLoading(view: WebView, req: android.webkit.WebResourceRequest): Boolean {
-                val u = req.url.toString()
+            override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
+                val u = request?.url?.toString() ?: return false
                 if (u.startsWith("http://") || u.startsWith("https://") || u.startsWith("file://")) return false
                 return try {
-                    startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, req.url))
+                    startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, request.url))
                     true
                 } catch (e: Exception) { true }
             }
@@ -149,10 +137,9 @@ class MainActivity : AppCompatActivity() {
 
         CookieManager.getInstance().setAcceptCookie(true)
         CookieManager.getInstance().setAcceptThirdPartyCookies(webView, true)
-
         webView.loadUrl(homeUrl)
+
         btnHome.setOnClickListener { webView.loadUrl(homeUrl) }
-        
         btnLoad.setOnClickListener {
             var url = etUrl.text.toString().trim()
             if (url.isNotEmpty()) {
@@ -164,11 +151,9 @@ class MainActivity : AppCompatActivity() {
                 Toast.makeText(this, "আগে একটা URL লিখুন", Toast.LENGTH_SHORT).show()
             }
         }
-
         fab.setOnClickListener {
             if (hasStoragePermission()) startExport() else requestStoragePermission()
         }
-
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
                 if (webView.canGoBack()) webView.goBack() else finish()
@@ -194,8 +179,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun hasStoragePermission(): Boolean {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) return true
-        return ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_EXTERNAL_STORAGE) ==
-                PackageManager.PERMISSION_GRANTED
+        return ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED
     }
 
     private fun requestStoragePermission() {
@@ -206,7 +190,7 @@ class MainActivity : AppCompatActivity() {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (requestCode == storagePermissionCode) {
             if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) startExport()
-            else Toast.makeText(this, "স্টোরেজ পারমিশন দরকার।", Toast.LENGTH_LONG).show()
+            else Toast.makeText(this, "স্টোরেজ পারমিশন প্রয়োজন।", Toast.LENGTH_LONG).show()
         }
     }
 
@@ -217,7 +201,6 @@ class MainActivity : AppCompatActivity() {
             Toast.makeText(this, "আগে একটা AI চ্যাট খুলুন, তারপর Export চাপুন।", Toast.LENGTH_LONG).show()
             return
         }
-
         exporting = true
         received = false
         exportToken++
@@ -225,20 +208,16 @@ class MainActivity : AppCompatActivity() {
         pageUrlForExport = current
         uaForExport = webView.settings.userAgentString ?: ""
         payloadBuf.setLength(0)
-
         fab.isEnabled = false
         fab.text = "পড়া হচ্ছে..."
-        Toast.makeText(this, "পুরো চ্যাট স্ক্যান ও পড়া হচ্ছে, একটু সময় লাগবে...", Toast.LENGTH_SHORT).show()
-
+        Toast.makeText(this, "পুরো চ্যাট স্কান ও পড়া হচ্ছে, একটু সময় লাগবে...", Toast.LENGTH_SHORT).show()
         lifecycleScope.launch {
             val js = withContext(Dispatchers.IO) {
-                try { assets.open("extract_chat.js").bufferedReader().use { it.readText() } }
-                catch (e: Exception) { "" }
+                try { assets.open("extract_chat.js").bufferedReader().use { it.readText() } } catch (e: Exception) { "" }
             }
             if (js.isNotEmpty()) webView.evaluateJavascript(js, null)
             else finishExport("JS ফাইল লোড করা যায়নি।")
         }
-
         fab.postDelayed({
             if (exporting && token == exportToken) finishExport("সময় শেষ — আবার চেষ্টা করুন।")
         }, 180000)
@@ -286,7 +265,7 @@ class MainActivity : AppCompatActivity() {
                         "✅ PDF সফল হয়েছে: $path"
                     }
                 } catch (e: OutOfMemoryError) {
-                    "মেমোরি অভাবে এক্সপোর্ট ব্যর্থ। অ্যাপ বন্ধ করে আবার চালু করুন।"
+                    "মেমোরি অভাবে এক্সপোর্ট ব্যর্থ। অ্যাপ বন্ধ করে আবার চেষ্টা করুন।"
                 } catch (e: Exception) {
                     "এক্সপোর্ট ব্যর্থ: ${e.message ?: "অজানা এরর"}"
                 }
@@ -312,14 +291,7 @@ class MainActivity : AppCompatActivity() {
                         val mObj = mediaArr.optJSONObject(j) ?: continue
                         val data = mObj.optString("data", "")
                         if (data.isNotBlank()) {
-                            mediaList.add(
-                                MediaItem(
-                                    mObj.optString("type", ""),
-                                    data,
-                                    mObj.optDouble("w", 0.0).toFloat(),
-                                    mObj.optDouble("h", 0.0).toFloat()
-                                )
-                            )
+                            mediaList.add(MediaItem(mObj.optString("type", ""), data, mObj.optDouble("w", 0.0).toFloat(), mObj.optDouble("h", 0.0).toFloat()))
                         }
                     }
                 }
@@ -332,17 +304,43 @@ class MainActivity : AppCompatActivity() {
         return Triple(title, url, list)
     }
 
-    private fun prepareCode(code: String): String {
+    private fun prepareCode(code: String): String = code.replace("\t", "    ").trimEnd()
+
+    private fun wrapCode(code: String, paint: TextPaint, maxWidth: Float): String {
         val sb = StringBuilder()
-        val lines = code.replace("\t", " ").split("\n")
-        for ((i, line) in lines.withIndex()) {
-            if (i > 0) sb.append('\n')
-            var n = 0
-            while (n < line.length && line[n] == ' ') n++
-            repeat(n) { sb.append('\u00A0') }
-            sb.append(line.substring(n))
+        val breakChars = charArrayOf(' ', ',', ';', '.', '(', ')', '[', ']', '{', '}', '=', '+', '-', '/', '\\', ':', '_')
+        for ((idx, raw) in code.split("\n").withIndex()) {
+            if (idx > 0) sb.append('\n')
+            var line = raw
+            if (paint.measureText(line) <= maxWidth) {
+                sb.append(line)
+                continue
+            }
+            var indent = 0
+            while (indent < line.length && line[indent] == ' ') indent++
+            val cont = (if (indent > 20) "                    " else " ".repeat(indent)) + "  "
+            var first = true
+            while (line.isNotEmpty()) {
+                val prefix = if (first) "" else cont
+                val avail = maxWidth - paint.measureText(prefix)
+                var n = paint.breakText(line, true, avail.coerceAtLeast(20f), null)
+                if (n >= line.length) {
+                    sb.append(prefix).append(line)
+                    break
+                }
+                var cut = n
+                while (cut > n / 2 && line[cut - 1] !in breakChars) cut--
+                if (cut <= n / 2) cut = n
+                sb.append(prefix).append(line, 0, cut)
+                line = line.substring(cut)
+                if (line.isNotEmpty()) {
+                    sb.append('\n')
+                    line = line.trimStart()
+                }
+                first = false
+            }
         }
-        return sb.toString().trimEnd()
+        return sb.toString()
     }
 
     private fun splitSegments(raw: String, media: List<MediaItem>): List<Seg> {
@@ -375,9 +373,7 @@ class MainActivity : AppCompatActivity() {
                 val en = raw.indexOf(mediaEnd, st + 1)
                 val idxStr = if (en < 0) raw.substring(st + 1) else raw.substring(st + 1, en)
                 val idx = idxStr.trim().toIntOrNull() ?: -1
-                if (idx >= 0 && idx < media.size) {
-                    out.add(Seg("", false, idx))
-                }
+                if (idx >= 0 && idx < media.size) out.add(Seg("", false, idx))
                 i = if (en < 0) raw.length else en + 1
             }
         }
@@ -406,7 +402,6 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun reqWidthNow(): Int = if (bitmapBytes > BITMAP_BUDGET) 480 else MAX_DECODE_WIDTH_PX
-
     private fun register(bmp: Bitmap?): Bitmap? {
         if (bmp != null) {
             allBitmaps.add(bmp)
@@ -454,9 +449,7 @@ class MainActivity : AppCompatActivity() {
                     conn.doInput = true
                     if (uaForExport.isNotBlank()) conn.setRequestProperty("User-Agent", uaForExport)
                     if (pageUrlForExport.isNotBlank()) conn.setRequestProperty("Referer", pageUrlForExport)
-                    try {
-                        CookieManager.getInstance().getCookie(data)?.let { conn.setRequestProperty("Cookie", it) }
-                    } catch (e: Exception) {}
+                    try { CookieManager.getInstance().getCookie(data)?.let { conn.setRequestProperty("Cookie", it) } } catch (e: Exception) {}
                     conn.connect()
                     val bytes = conn.inputStream.use { it.readBytes() }
                     conn.disconnect()
@@ -474,29 +467,18 @@ class MainActivity : AppCompatActivity() {
         return v
     }
 
-    private fun mediaSizeOf(
-        item: MediaItem,
-        maxWidth: Float,
-        maxHeight: Float,
-        bitmapCache: MutableMap<Int, Bitmap?>,
-        svgCache: MutableMap<Int, SVG?>,
-        key: Int
-    ): SizeF? {
+    private fun mediaSizeOf(item: MediaItem, maxWidth: Float, maxHeight: Float, bitmapCache: MutableMap<Int, Bitmap?>, svgCache: MutableMap<Int, SVG?>, key: Int): SizeF? {
         try {
             var w: Float
             var h: Float
             when (item.type) {
                 "img" -> {
-                    val bmp = cached(bitmapCache, key) {
-                        register(loadBitmapFromData(item.data, reqWidthNow()))
-                    } ?: return null
+                    val bmp = cached(bitmapCache, key) { register(loadBitmapFromData(item.data, reqWidthNow())) } ?: return null
                     if (bmp.isRecycled) return null
                     w = bmp.width.toFloat(); h = bmp.height.toFloat()
                 }
                 "svg" -> {
-                    val svg = cached(svgCache, key) {
-                        try { SVG.getFromString(item.data) } catch (e: Exception) { null }
-                    } ?: return null
+                    val svg = cached(svgCache, key) { try { SVG.getFromString(item.data) } catch (e: Exception) { null } } ?: return null
                     val vb = svg.documentViewBox
                     w = when {
                         svg.documentWidth > 0f -> svg.documentWidth
@@ -518,22 +500,10 @@ class MainActivity : AppCompatActivity() {
             if (h > maxHeight) { w *= maxHeight / h; h = maxHeight }
             if (w <= 0f || h <= 0f) return null
             return SizeF(w, h)
-        } catch (e: Exception) {
-            return null
-        }
+        } catch (e: Exception) { return null }
     }
 
-    private fun drawMedia(
-        canvas: Canvas,
-        item: MediaItem,
-        x: Float,
-        y: Float,
-        maxWidth: Float,
-        maxHeight: Float,
-        bitmapCache: MutableMap<Int, Bitmap?>,
-        svgCache: MutableMap<Int, SVG?>,
-        key: Int
-    ) {
+    private fun drawMedia(canvas: Canvas, item: MediaItem, x: Float, y: Float, maxWidth: Float, maxHeight: Float, bitmapCache: MutableMap<Int, Bitmap?>, svgCache: MutableMap<Int, SVG?>, key: Int) {
         val size = mediaSizeOf(item, maxWidth, maxHeight, bitmapCache, svgCache, key)
         if (size == null) {
             val p = TextPaint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.GRAY; textSize = 11f }
@@ -543,9 +513,7 @@ class MainActivity : AppCompatActivity() {
         try {
             if (item.type == "img") {
                 val bmp = bitmapCache[key]
-                if (bmp != null && !bmp.isRecycled) {
-                    canvas.drawBitmap(bmp, null, RectF(x, y, x + size.width, y + size.height), null)
-                }
+                if (bmp != null && !bmp.isRecycled) canvas.drawBitmap(bmp, null, RectF(x, y, x + size.width, y + size.height), null)
             } else if (item.type == "svg") {
                 val svg = svgCache[key]
                 if (svg != null) {
@@ -556,27 +524,13 @@ class MainActivity : AppCompatActivity() {
                     canvas.restore()
                 }
             }
-        } catch (e: Exception) {
-            try { canvas.restore() } catch (e2: Exception) {}
-        }
+        } catch (e: Exception) { try { canvas.restore() } catch (e2: Exception) {} }
     }
 
-    private fun measureMediaHeight(
-        item: MediaItem,
-        maxWidth: Float,
-        maxHeight: Float,
-        bitmapCache: MutableMap<Int, Bitmap?>,
-        svgCache: MutableMap<Int, SVG?>,
-        key: Int
-    ): Float = mediaSizeOf(item, maxWidth, maxHeight, bitmapCache, svgCache, key)?.height
-        ?: PLACEHOLDER_TEXT_HEIGHT
+    private fun measureMediaHeight(item: MediaItem, maxWidth: Float, maxHeight: Float, bitmapCache: MutableMap<Int, Bitmap?>, svgCache: MutableMap<Int, SVG?>, key: Int): Float =
+        mediaSizeOf(item, maxWidth, maxHeight, bitmapCache, svgCache, key)?.height ?: PLACEHOLDER_TEXT_HEIGHT
 
-    private fun generateAndSavePdf(
-        chatTitle: String,
-        chatUrl: String,
-        messages: List<ChatMessage>,
-        fileName: String
-    ): String {
+    private fun generateAndSavePdf(chatTitle: String, chatUrl: String, messages: List<ChatMessage>, fileName: String): String {
         allBitmaps.clear()
         bitmapBytes = 0L
         val pdfDocument = PdfDocument()
@@ -585,13 +539,12 @@ class MainActivity : AppCompatActivity() {
             val aiBgColor = Color.parseColor("#ECEFF1")
             val userBarColor = Color.parseColor("#2E7D32")
             val aiBarColor = Color.parseColor("#1565C0")
-
             val headerPaint = buildTextPaint(true, 15f, Color.parseColor("#0D47A1"))
             val smallPaint = buildTextPaint(false, 9f, Color.parseColor("#757575"))
             val userTitlePaint = buildTextPaint(true, 12.5f, Color.parseColor("#1B5E20"))
             val aiTitlePaint = buildTextPaint(true, 12.5f, Color.parseColor("#0D47A1"))
             val bodyPaint = buildTextPaint(false, 11.5f, Color.parseColor("#212121"))
-            val codePaint = buildTextPaint(false, 9.3f, Color.parseColor("#102027"), mono = true)
+            val codePaint = buildTextPaint(false, 8.2f, Color.parseColor("#102027"), mono = true)
             val codeBgPaint = Paint().apply { color = Color.parseColor("#F4F5F7") }
             val codeBarPaint = Paint().apply { color = Color.parseColor("#90A4AE") }
             val dividerPaint = Paint().apply { color = Color.parseColor("#BDBDBD"); strokeWidth = 1f }
@@ -625,7 +578,6 @@ class MainActivity : AppCompatActivity() {
             val infoLayout = layoutOf(infoText, smallPaint, contentWidth.toInt(), false)
             canvas.save(); canvas.translate(marginLeft, cursorY); infoLayout.draw(canvas); canvas.restore()
             cursorY += infoLayout.height + 8f
-
             canvas.drawLine(marginLeft, cursorY, marginLeft + contentWidth, cursorY, dividerPaint)
             cursorY += 24f
 
@@ -633,7 +585,6 @@ class MainActivity : AppCompatActivity() {
             val padding = 14f
             val innerWidth = contentWidth - barWidth - (padding * 2)
             val codeInset = 6f
-
             var questionNo = 0
             var answerNo = 0
 
@@ -641,21 +592,16 @@ class MainActivity : AppCompatActivity() {
                 if (msg.text.isBlank() && msg.media.isEmpty()) continue
                 val isUser = msg.role == "user"
                 if (isUser) questionNo++ else answerNo++
-
                 val bitmapCache = HashMap<Int, Bitmap?>()
                 val svgCache = HashMap<Int, SVG?>()
-
                 val label = if (isUser) "USER | #$questionNo" else "AI | উত্তর #$answerNo"
                 val bgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = if (isUser) userBgColor else aiBgColor }
                 val barPaint = Paint().apply { color = if (isUser) userBarColor else aiBarColor }
                 val titlePaint = if (isUser) userTitlePaint else aiTitlePaint
-
                 val labelLayout = layoutOf(label, titlePaint, innerWidth.toInt(), false)
                 val items = mutableListOf<LineItem>()
                 val segments = splitSegments(msg.text, msg.media)
-
-                val maxMediaHeight = (pageHeight - marginTop - marginBottom - padding * 2 -
-                        labelLayout.height - 8f - MEDIA_TOP_PADDING - MEDIA_BOTTOM_PADDING - 6f).coerceAtLeast(150f)
+                val maxMediaHeight = (pageHeight - marginTop - marginBottom - padding * 2 - labelLayout.height - 8f - MEDIA_TOP_PADDING - MEDIA_BOTTOM_PADDING - 6f).coerceAtLeast(150f)
 
                 if (segments.isEmpty() && msg.media.isNotEmpty()) {
                     for (mi in msg.media.indices) {
@@ -666,7 +612,9 @@ class MainActivity : AppCompatActivity() {
                     for (seg in segments) {
                         if (seg.isCode) {
                             if (seg.text.isBlank()) continue
-                            val lay = layoutOf(seg.text, codePaint, (innerWidth - codeInset * 2).toInt(), true)
+                            val cw = (innerWidth - codeInset * 2).toFloat()
+                            val wrapped = wrapCode(seg.text, codePaint, cw)
+                            val lay = layoutOf(wrapped, codePaint, cw.toInt(), true)
                             for (l in 0 until lay.lineCount) {
                                 items.add(LineItem(lay, l, true, (lay.getLineBottom(l) - lay.getLineTop(l)).toFloat()))
                             }
@@ -684,16 +632,13 @@ class MainActivity : AppCompatActivity() {
                 }
 
                 if (items.isEmpty()) continue
-
                 var pos = 0
                 var firstChunk = true
-
                 while (pos < items.size) {
                     val available = (pageHeight - marginBottom) - cursorY
                     val labelH = if (firstChunk) labelLayout.height + 8f else 0f
                     var count = 0
                     var textH = 0f
-
                     while (pos + count < items.size) {
                         val h = items[pos + count].height.coerceAtLeast(1f)
                         if (padding * 2 + labelH + textH + h > available && count > 0) break
@@ -701,26 +646,20 @@ class MainActivity : AppCompatActivity() {
                         count++
                         if (count == 1 && padding * 2 + labelH + textH > available) break
                     }
-
                     if (padding * 2 + labelH + textH > available && cursorY > marginTop + 2f) {
                         startNewPage()
                         continue
                     }
-
                     if (count == 0) { count = 1; textH = items[pos].height.coerceAtLeast(1f) }
-
                     val chunkH = (padding * 2 + labelH + textH).coerceAtLeast(30f)
                     canvas.drawRoundRect(RectF(marginLeft, cursorY, marginLeft + contentWidth, cursorY + chunkH), 10f, 10f, bgPaint)
                     canvas.drawRect(RectF(marginLeft, cursorY, marginLeft + barWidth, cursorY + chunkH), barPaint)
-
                     var y = cursorY + padding
                     val xBase = marginLeft + barWidth + padding
-
                     if (firstChunk) {
                         canvas.save(); canvas.translate(xBase, y); labelLayout.draw(canvas); canvas.restore()
                         y += labelH
                     }
-
                     for (k in 0 until count) {
                         if (pos + k >= items.size) break
                         val item = items[pos + k]
@@ -743,11 +682,9 @@ class MainActivity : AppCompatActivity() {
                         }
                         y += item.height.coerceAtLeast(1f)
                     }
-
                     cursorY += chunkH
                     pos += count
                     firstChunk = false
-
                     if (pos < items.size) {
                         startNewPage()
                     } else {
@@ -765,9 +702,7 @@ class MainActivity : AppCompatActivity() {
             return path
         } finally {
             pdfDocument.close()
-            for (bmp in allBitmaps) {
-                try { if (!bmp.isRecycled) bmp.recycle() } catch (e: Exception) {}
-            }
+            for (bmp in allBitmaps) { try { if (!bmp.isRecycled) bmp.recycle() } catch (e: Exception) {} }
             allBitmaps.clear()
             bitmapBytes = 0L
         }
@@ -782,10 +717,8 @@ class MainActivity : AppCompatActivity() {
                 put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
                 put(MediaStore.Downloads.IS_PENDING, 1)
             }
-            val uri: Uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
-                ?: throw IllegalStateException("পাবলিক Downloads ফোল্ডারে ফাইল তৈরি করা গেল না।")
-            resolver.openOutputStream(uri)?.use { pdfDocument.writeTo(it) }
-                ?: throw IllegalStateException("আউটপুট স্ট্রিম খোলা গেল না")
+            val uri: Uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values) ?: throw IllegalStateException("পাবলিক Downloads ফোল্ডারে ফাইল তৈরি করা গেল না।")
+            resolver.openOutputStream(uri)?.use { pdfDocument.writeTo(it) } ?: throw IllegalStateException("আউটপুট স্ট্রিম খোলা গেল না")
             values.clear()
             values.put(MediaStore.Downloads.IS_PENDING, 0)
             resolver.update(uri, values, null, null)
