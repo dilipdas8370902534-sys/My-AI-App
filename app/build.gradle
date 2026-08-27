@@ -10,7 +10,7 @@ android {
         minSdk 23
         targetSdk 34
         versionCode 14
-        versionName "2.2-ExpandFix"
+        versionName "3.0-PerfectBuild"
     }
     buildTypes {
         release {
