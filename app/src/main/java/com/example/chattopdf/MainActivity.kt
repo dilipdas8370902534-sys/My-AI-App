@@ -77,10 +77,10 @@ class MainActivity : AppCompatActivity() {
     private val marginBottom = 50f
     private val contentWidth get() = pageWidth - marginLeft - marginRight
 
-    private val codeStart = '\uE000'
-    private val codeEnd = '\uE001'
-    private val mediaStart = '\uE002'
-    private val mediaEnd = '\uE003'
+    private val codeStart = '�'
+    private val codeEnd = ''
+    private val mediaStart = ''
+    private val mediaEnd = ''
 
     private val MEDIA_TOP_PADDING = 6f
     private val MEDIA_BOTTOM_PADDING = 8f
@@ -91,6 +91,11 @@ class MainActivity : AppCompatActivity() {
     private val allBitmaps = mutableListOf<Bitmap>()
     private var bitmapBytes = 0L
     private val payloadBuf = StringBuilder()
+
+    // ★★★ (ঝ) FIX: টাইমআউট Runnable — প্রতিটি চাঙ্ক এলে রিসেট হবে ★★★
+    private val exportTimeoutRunnable = Runnable {
+        if (exporting) finishExport("সময় শেষ — আবার চেষ্টা করুন।")
+    }
 
     data class ChatMessage(val role: String, val text: String, val media: List<MediaItem> = emptyList())
     data class MediaItem(val type: String, val data: String, val w: Float, val h: Float)
@@ -205,7 +210,6 @@ class MainActivity : AppCompatActivity() {
         exporting = true
         received = false
         exportToken++
-        val token = exportToken
         pageUrlForExport = current
         uaForExport = webView.settings.userAgentString ?: ""
         payloadBuf.setLength(0)
@@ -213,6 +217,9 @@ class MainActivity : AppCompatActivity() {
         fab.isEnabled = false
         fab.text = "পড়া হচ্ছে..."
         Toast.makeText(this, "পুরো চ্যাট স্ক্যান ও পড়া হচ্ছে, একটু সময় লাগবে...", Toast.LENGTH_SHORT).show()
+
+        // ★★★ (ঝ) FIX: আটকে যাওয়া ফ্ল্যাগ রিসেট — JS ইনজেক্ট করার ঠিক আগে ★★★
+        webView.evaluateJavascript("try{window.__xExtRunning=false;}catch(e){}", null)
 
         lifecycleScope.launch {
             val js = withContext(Dispatchers.IO) {
@@ -223,15 +230,15 @@ class MainActivity : AppCompatActivity() {
             else finishExport("JS ফাইল লোড করা যায়নি।")
         }
 
-        // v2.3-এ timeout বাড়ানো হয়েছে কারণ স্ক্রলিং ও expansion বেশি সময় নেবে
-        fab.postDelayed({
-            if (exporting && token == exportToken) finishExport("সময় শেষ — আবার চেষ্টা করুন।")
-        }, 300000)  // ১৮০ থেকে ৩০০ সেকেন্ড (৫ মিনিট)
+        // ★★★ (ঝ) FIX: টাইমআউট — চাঙ্ক এলে রিসেট হবে, নাহলে ৫ মিনিট ★★★
+        fab.removeCallbacks(exportTimeoutRunnable)
+        fab.postDelayed(exportTimeoutRunnable, 300000)
     }
 
     private fun finishExport(message: String) {
         exporting = false
         exportToken++
+        fab.removeCallbacks(exportTimeoutRunnable)
         fab.isEnabled = true
         fab.text = "Export PDF"
         Toast.makeText(this, message, Toast.LENGTH_LONG).show()
@@ -248,6 +255,9 @@ class MainActivity : AppCompatActivity() {
         @JavascriptInterface
         fun receiveChunk(part: String, last: Int) {
             if (!exporting || received) return
+            // ★★★ (ঝ) FIX: প্রতিটি চাঙ্ক এলে টাইমআউট রিসেট ★★★
+            fab.removeCallbacks(exportTimeoutRunnable)
+            fab.postDelayed(exportTimeoutRunnable, 300000)
             payloadBuf.append(part)
             if (last == 1) {
                 val json = payloadBuf.toString()
@@ -306,14 +316,15 @@ class MainActivity : AppCompatActivity() {
         return Triple(title, url, list)
     }
 
+    // ★★★ (জ) FIX: কোডের ট্যাব এখন ৪ স্পেস — ইনডেন্ট ঠিক থাকবে ★★★
     private fun prepareCode(code: String): String {
         val sb = StringBuilder()
-        val lines = code.replace("\t", " ").split("\n")
+        val lines = code.replace("\t", "    ").split("\n")
         for ((i, line) in lines.withIndex()) {
             if (i > 0) sb.append('\n')
             var n = 0
             while (n < line.length && line[n] == ' ') n++
-            repeat(n) { sb.append('\u00A0') }
+            repeat(n) { sb.append(' ') }
             sb.append(line.substring(n))
         }
         return sb.toString().trimEnd()
