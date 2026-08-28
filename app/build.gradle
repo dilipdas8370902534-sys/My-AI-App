@@ -9,8 +9,8 @@ android {
         applicationId "com.example.chattopdf"
         minSdk 23
         targetSdk 34
-        versionCode 14
-        versionName "2.3-LongPromptFix"
+        versionCode 15
+        versionName "2.4-AllSiteFix"
     }
     buildTypes {
         release {
