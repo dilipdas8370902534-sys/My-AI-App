@@ -77,10 +77,10 @@ class MainActivity : AppCompatActivity() {
     private val marginBottom = 50f
     private val contentWidth get() = pageWidth - marginLeft - marginRight
 
-    private val codeStart = '\uE000'
-    private val codeEnd = '\uE001'
-    private val mediaStart = '\uE002'
-    private val mediaEnd = '\uE003'
+    private val codeStart = '�'
+    private val codeEnd = ''
+    private val mediaStart = ''
+    private val mediaEnd = ''
 
     private val MEDIA_TOP_PADDING = 6f
     private val MEDIA_BOTTOM_PADDING = 8f
@@ -256,10 +256,8 @@ class MainActivity : AppCompatActivity() {
         fun receiveChunk(part: String, last: Int) {
             if (!exporting || received) return
             // ★★★ (ঝ) FIX: প্রতিটি চাঙ্ক এলে টাইমআউট রিসেট ★★★
-            runOnUiThread {
-                fab.removeCallbacks(exportTimeoutRunnable)
-                fab.postDelayed(exportTimeoutRunnable, 300000)
-            }
+            fab.removeCallbacks(exportTimeoutRunnable)
+            fab.postDelayed(exportTimeoutRunnable, 300000)
             payloadBuf.append(part)
             if (last == 1) {
                 val json = payloadBuf.toString()
@@ -326,7 +324,7 @@ class MainActivity : AppCompatActivity() {
             if (i > 0) sb.append('\n')
             var n = 0
             while (n < line.length && line[n] == ' ') n++
-            repeat(n) { sb.append('\u00A0') }
+            repeat(n) { sb.append(' ') }
             sb.append(line.substring(n))
         }
         return sb.toString().trimEnd()
