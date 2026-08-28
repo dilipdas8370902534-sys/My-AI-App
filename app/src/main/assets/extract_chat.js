@@ -21,11 +21,7 @@ var CAND_SEL = 'button, [role="button"], summary, [aria-expanded="false"], [clas
 var SAFE_ZONE = '[data-message-author-role], [class*="message" i], [class*="chat" i], [class*="prompt" i], [class*="bubble" i], article, main';
 
 function status(s){
-  try{
-    if(window.AndroidPdfExporter && window.AndroidPdfExporter.reportStatus){
-      window.AndroidPdfExporter.reportStatus(String(s));
-    }
-  }catch(e){}
+  try{ if(window.AndroidPdfExporter && window.AndroidPdfExporter.reportStatus){ window.AndroidPdfExporter.reportStatus(String(s)); } }catch(e){}
 }
 
 function isVisible(el){
@@ -67,10 +63,7 @@ function expandOnce(){
       try{ if(el.closest(SAFE_ZONE)) inSafe = true; }catch(e){}
       if(!inSafe) continue;
       var label = '';
-      try{
-        label = (el.innerText || el.value || el.textContent ||
-                 el.getAttribute('aria-label') || el.getAttribute('title') || '').toLowerCase();
-      }catch(e){}
+      try{ label = (el.innerText || el.value || el.textContent || el.getAttribute('aria-label') || el.getAttribute('title') || '').toLowerCase(); }catch(e){}
       if(label.length > 90) label = label.slice(0, 90);
       var cls = '';
       try{ cls = (el.className && typeof el.className === 'string') ? el.className.toLowerCase() : ''; }catch(e){}
@@ -122,9 +115,7 @@ function imgToData(img){
     c.width = cw; c.height = ch;
     c.getContext('2d').drawImage(img, 0, 0, cw, ch);
     var d = c.toDataURL('image/png');
-    if(d && d.length > 250000){
-      try{ var j = c.toDataURL('image/jpeg', 0.85); if(j && j.length < d.length) d = j; }catch(e){}
-    }
+    if(d && d.length > 250000){ try{ var j = c.toDataURL('image/jpeg', 0.85); if(j && j.length < d.length) d = j; }catch(e){} }
     if(d && d.length > 100){ imgBytes += d.length; return {type:'img', data:d, w:cw, h:ch}; }
   }catch(e){}
   if(src) return {type:'img', data:src, w:w, h:h};
@@ -153,12 +144,10 @@ function extractMediaData(el){
       var rect = el.getBoundingClientRect();
       if(rect.width < 10 || rect.height < 10) return null;
       var cls = '';
-      try{
-        cls = (el.className && typeof el.className.baseVal === 'string') ? el.className.baseVal.toLowerCase()
-            : ((typeof el.className === 'string') ? el.className.toLowerCase() : '');
-      }catch(e){}
+      try{ cls = (el.className && typeof el.className.baseVal === 'string') ? el.className.baseVal.toLowerCase() : ((typeof el.className === 'string') ? el.className.toLowerCase() : ''); }catch(e){}
       if(cls.indexOf('icon') !== -1 || cls.indexOf('copy') !== -1 || cls.indexOf('thumb') !== -1 || cls.indexOf('feedback') !== -1) return null;
-      var svgStr = new XMLSerializer().serializeToString(el);
+      var serializer = new XMLSerializer();
+      var svgStr = serializer.serializeToString(el);
       if(svgStr.length > 400000) return null;
       if(svgStr.indexOf('xmlns=') === -1) svgStr = svgStr.replace('<svg', '<svg xmlns="http://www.w3.org/2000/svg"');
       return {type:'svg', data:svgStr, w:rect.width, h:rect.height};
@@ -170,14 +159,6 @@ function extractMediaData(el){
 function cleanText(node){
   var i, j;
   try{
-    // Edit-বক্স খোলা থাকলে ভেতরের লেখা রক্ষা করা
-    var lta = node.querySelectorAll('textarea'), ltaTagged = [];
-    for(i=0; i<lta.length; i++){
-      var lv = '';
-      try{ lv = lta[i].value || ''; }catch(e){}
-      if(lv && lv.length > 1){ lta[i].setAttribute('data-tv', lv); ltaTagged.push(lta[i]); }
-    }
-
     var MEDIA_SEL = 'img, svg, canvas, mjx-container, math, picture, figure';
     var mediaNodes = node.querySelectorAll(MEDIA_SEL);
     var mediaList = [], mediaTagged = [];
@@ -187,8 +168,9 @@ function cleanText(node){
       if(skip) continue;
       var data = extractMediaData(m);
       if(!data) continue;
+      var idx = mediaList.length;
       mediaList.push(data);
-      m.setAttribute('data-mx', String(mediaList.length - 1));
+      m.setAttribute('data-mx', String(idx));
       mediaTagged.push(m);
     }
 
@@ -201,50 +183,47 @@ function cleanText(node){
       var t = getCodeText(b);
       if(!t) continue;
       b.setAttribute('data-cx', String(codes.length));
-      tagged.push(b); codes.push(t);
+      tagged.push(b);
+      codes.push(t);
     }
 
     var clone = node.cloneNode(true);
     for(i=0; i<tagged.length; i++){ try{ tagged[i].removeAttribute('data-cx'); }catch(e){} }
     for(i=0; i<mediaTagged.length; i++){ try{ mediaTagged[i].removeAttribute('data-mx'); }catch(e){} }
-    for(i=0; i<ltaTagged.length; i++){ try{ ltaTagged[i].removeAttribute('data-tv'); }catch(e){} }
-
-    var tvs = clone.querySelectorAll('[data-tv]');
-    for(i=0; i<tvs.length; i++){
-      var tvv = tvs[i].getAttribute('data-tv') || '';
-      if(tvs[i].parentNode) tvs[i].parentNode.replaceChild(document.createTextNode('\n' + tvv + '\n'), tvs[i]);
-    }
 
     var marks = clone.querySelectorAll('[data-cx]');
     for(i=0; i<marks.length; i++){
       var cidx = parseInt(marks[i].getAttribute('data-cx'), 10);
       if(!isNaN(cidx) && cidx >= 0 && cidx < codes.length){
-        marks[i].parentNode.replaceChild(document.createTextNode('\n' + CS + codes[cidx] + CE + '\n'), marks[i]);
+        var tn = document.createTextNode('\n' + CS + codes[cidx] + CE + '\n');
+        marks[i].parentNode.replaceChild(tn, marks[i]);
       }
     }
     var mmarks = clone.querySelectorAll('[data-mx]');
     for(i=0; i<mmarks.length; i++){
       var midx = parseInt(mmarks[i].getAttribute('data-mx'), 10);
       if(!isNaN(midx) && midx >= 0 && midx < mediaList.length){
-        mmarks[i].parentNode.replaceChild(document.createTextNode('\n' + MS + midx + ME + '\n'), mmarks[i]);
+        var tn2 = document.createTextNode('\n' + MS + midx + ME + '\n');
+        mmarks[i].parentNode.replaceChild(tn2, mmarks[i]);
       }
     }
 
+    // LaTeX/Math fix
     var kx = clone.querySelectorAll('.katex, mjx-container');
     for(i=0; i<kx.length; i++){
       var tex = kx[i].querySelector('annotation[encoding="application/x-tex"]');
-      var rep = tex ? ('$' + (tex.textContent||'').trim() + '$') : (kx[i].innerText || kx[i].textContent || '');
-      if(kx[i].parentNode) kx[i].parentNode.replaceChild(document.createTextNode(' ' + rep + ' '), kx[i]);
+      var rep = tex ? ('$' + (tex.textContent||'').trim() + '$') : (kx[i].innerText || '');
+      kx[i].parentNode.replaceChild(document.createTextNode(' ' + rep + ' '), kx[i]);
     }
     var hid = clone.querySelectorAll('.katex-mathml, .sr-only, .visually-hidden, [hidden], [style*="display:none"], [style*="display: none"]');
     for(i=0; i<hid.length; i++){ if(hid[i].parentNode) hid[i].parentNode.removeChild(hid[i]); }
 
     var junk = clone.querySelectorAll(JUNK_SEL);
     for(i=0; i<junk.length; i++){
-      var jn = junk[i];
-      if(!jn.parentNode) continue;
-      if(jn.textContent && (jn.textContent.indexOf(CS) !== -1 || jn.textContent.indexOf(MS) !== -1)) continue;
-      jn.parentNode.removeChild(jn);
+      var el = junk[i];
+      if(!el.parentNode) continue;
+      if(el.textContent && (el.textContent.indexOf(CS) !== -1 || el.textContent.indexOf(MS) !== -1)) continue;
+      el.parentNode.removeChild(el);
     }
 
     var inline = clone.querySelectorAll('code');
@@ -253,14 +232,15 @@ function cleanText(node){
       if(it) inline[i].parentNode.replaceChild(document.createTextNode('`' + it + '`'), inline[i]);
     }
 
+    // List numbering & links
     var lis = clone.querySelectorAll('li');
     for(i=0; i<lis.length; i++){
       var par = lis[i].parentNode;
       var pre = '• ';
       if(par && par.tagName && par.tagName.toLowerCase() === 'ol'){
-        var cnt = 1, s = lis[i].previousElementSibling;
-        while(s){ if(s.tagName.toLowerCase() === 'li') cnt++; s = s.previousElementSibling; }
-        pre = cnt + '. ';
+        var n = 1, s = lis[i].previousElementSibling;
+        while(s){ if(s.tagName.toLowerCase()==='li') n++; s = s.previousElementSibling; }
+        pre = n + '. ';
       }
       lis[i].insertBefore(document.createTextNode(pre), lis[i].firstChild);
     }
@@ -282,7 +262,9 @@ function cleanText(node){
 
     var out = clone.textContent || '';
     return { text: out.replace(/\u00a0/g, ' ').replace(/[\t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim(), media: mediaList };
-  }catch(e){ return { text: '', media: [] }; }
+  }catch(e){
+    return { text: '', media: [] };
+  }
 }
 
 function dedupeMedia(text, allMedia){
@@ -328,7 +310,8 @@ function pushMsg(list, role, text, media){
   if(list.length && list[list.length-1].role === role){
     var last = list[list.length-1];
     var offset = last.media.length;
-    last.text += '\n' + shiftMarkers(text, offset);
+    var shiftedNewText = shiftMarkers(text, offset);
+    last.text += '\n' + shiftedNewText;
     last.media = last.media.concat(media || []);
     return;
   }
@@ -358,6 +341,16 @@ function sendResult(messages){
     try{ window.__xExtRunning = false; }catch(e){}
   }
 }
+
+// Incremental Collector — Virtual Scrolling Fix
+var collected = [], seen = {};
+
+function hashStr(s){ var h=5381,i; for(i=0;i<s.length;i++){ h=((h<<5)+h+s.charCodeAt(i))|0; } return String(h); }
+
+var SITE_SEL = '[data-message-author-role], user-query, model-response, ' +
+  '[data-testid="user-message"], [class*="font-user-message" i], [class*="font-claude-message" i], ' +
+  '[class*="ds-markdown" i], [class*="chat-message" i], [class*="message-bubble" i], ' +
+  '[class*="conversation-turn" i], [class*="chat-turn" i]';
 
 var _sc = null;
 function findScroller(){
@@ -391,93 +384,31 @@ function absY(el){
   }catch(e){ return 0; }
 }
 
-var collected = [], seen = {};
-
-function hashStr(s){
-  var h = 5381, i;
-  for(i=0; i<s.length; i++){ h = ((h<<5) + h + s.charCodeAt(i)) | 0; }
-  return String(h);
-}
-
-var STRONG_SEL = '[data-message-author-role], user-query, model-response, [data-testid="user-message"], [class*="font-user-message" i]';
-var SITE_SEL = '[data-message-author-role], user-query, model-response, ' +
-  '[data-testid="user-message"], [class*="font-user-message" i], [class*="font-claude-message" i], ' +
-  '[class*="ds-markdown" i], [class*="chat-message" i], [class*="message-bubble" i], ' +
-  '[class*="conversation-turn" i], [class*="chat-turn" i]';
-
-function messageContainer(nodes){
-  var els = [], counts = [], i, d, p, idx;
-  for(i=0; i<nodes.length; i++){
-    p = nodes[i].parentNode; d = 0;
-    while(p && p.nodeType === 1 && d < 6){
-      idx = els.indexOf(p);
-      if(idx < 0){ els.push(p); counts.push(1); } else counts[idx]++;
-      p = p.parentNode; d++;
-    }
-  }
-  var best = null, bestC = 1;
-  for(i=0; i<els.length; i++){ if(counts[i] > bestC){ bestC = counts[i]; best = els[i]; } }
-  return best;
-}
-
 function getMessageNodes(){
   var all = Array.prototype.slice.call(document.querySelectorAll(SITE_SEL));
   var out = all.filter(function(n){
     if(!isVisible(n)) return false;
-    for(var i=0; i<all.length; i++){ if(all[i] !== n && all[i].contains(n)) return false; }
+    for(var i=0; i<all.length; i++){ if(all[i]!==n && all[i].contains(n)) return false; }
     return true;
   });
-  // DeepSeek-এর মতো সাইট: শুধু উত্তর ধরা পড়ে, প্রশ্নগুলো পাশের ভাইবোন এলিমেন্টে
-  try{
-    if(out.length && !document.querySelector(STRONG_SEL)){
-      var box = messageContainer(out);
-      if(box){
-        var kids = box.children, k, ch, contains, i2;
-        for(k=0; k<kids.length; k++){
-          ch = kids[k];
-          if(out.indexOf(ch) !== -1) continue;
-          contains = false;
-          for(i2=0; i2<out.length; i2++){ if(ch.contains(out[i2])){ contains = true; break; } }
-          if(contains) continue;
-          if(!isVisible(ch)) continue;
-          var tx = (ch.innerText || '').trim();
-          if(tx.length < 2) continue;
-          out.push(ch);
-        }
-      }
-    }
-  }catch(e){}
   out.sort(byDocOrder);
   return out;
 }
 
 function roleOf(el){
-  var r = (el.getAttribute('data-message-author-role') || '').toLowerCase();
+  var r = (el.getAttribute('data-message-author-role')||'').toLowerCase();
   if(r) return (r === 'user') ? 'user' : 'ai';
   var tag = el.tagName.toLowerCase();
   if(tag === 'user-query') return 'user';
   if(tag === 'model-response') return 'ai';
-  var g = guessRole(el);
-  if(g) return g;
-  try{
-    if(el.querySelector('[class*="ds-markdown" i], [class*="markdown" i], pre')) return 'ai';
-  }catch(e){}
-  return 'user';
-}
-
-function pendingImgs(el){
-  try{
-    var im = el.querySelectorAll('img'), c = 0;
-    for(var i=0; i<im.length; i++){ if(!im[i].complete || !im[i].naturalWidth) c++; }
-    return c;
-  }catch(e){ return 0; }
+  return guessRole(el) || 'ai';
 }
 
 function quickKey(el){
   var id = el.getAttribute('data-message-id') || el.getAttribute('data-id') || el.id;
   if(id) return 'i:' + id;
-  var t = (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim();
-  return 'h:' + roleOf(el) + ':' + hashStr(t.slice(0, 120));
+  var t = (el.innerText || el.textContent || '').replace(/\s+/g,' ').trim();
+  return 'h:' + hashStr(t.slice(0,60)) + ':' + t.length.toString().slice(0,2);
 }
 
 function collectPass(){
@@ -485,90 +416,32 @@ function collectPass(){
   for(i=0; i<nodes.length; i++){
     var el = nodes[i];
     var k = quickKey(el);
+    var curLen = (el.innerText || '').length;
     var y = absY(el);
-    var curLen = 0;
-    try{ curLen = (el.innerText || '').length; }catch(e){}
     var rec = seen[k];
-    // একই শুরুর লেখা কিন্তু পাতার অন্য জায়গায় => আলাদা মেসেজ
+    if(rec && curLen <= rec.len) continue;
     if(rec && Math.abs(y - rec.y) > 900){
       k = k + '@' + Math.round(y / 300);
       rec = seen[k];
     }
-    var pend = pendingImgs(el);
-    if(rec && curLen <= rec.len && rec.pend === 0) continue;
     var res = cleanText(el);
     res = dedupeMedia(res.text, res.media);
-    if(res.text.replace(/[\s\uE000-\uE003]/g, '').length < 1 && !res.media.length) continue;
+    if(res.text.replace(/[\s\uE000-\uE003]/g,'').length < 1 && !res.media.length) continue;
     var item = { role: roleOf(el), text: res.text, media: res.media, y: y };
-    if(rec){
-      collected[rec.idx] = item;
-      rec.len = curLen; rec.pend = pend; rec.y = y;
-    } else {
-      seen[k] = { idx: collected.length, len: curLen, pend: pend, y: y };
-      collected.push(item);
-    }
+    if(rec){ collected[rec.idx] = item; rec.len = curLen; rec.y = y; }
+    else { seen[k] = { idx: collected.length, len: curLen, y: y }; collected.push(item); }
   }
 }
 
 function finishFromCollected(){
-  if(!collected.length){ extract(); return; }
-  var arr = collected.slice(0);
-  arr.sort(function(a, b){ return a.y - b.y; });
-  var out = [], i;
-  for(i=0; i<arr.length; i++) pushMsg(out, arr[i].role, arr[i].text, arr[i].media);
+  if(!collected.length){ sendResult([]); return; }
+  // Sort by Y position (top to bottom)
+  var sorted = collected.slice().sort(function(a, b){ return (a.y || 0) - (b.y || 0); });
+  var out = [];
+  for(var i=0; i<sorted.length; i++){
+    pushMsg(out, sorted[i].role, sorted[i].text, sorted[i].media);
+  }
   sendResult(out);
-}
-
-function extract(){
-  var messages = [], i, t, r;
-  try{
-    var roleNodes = Array.prototype.slice.call(document.querySelectorAll('[data-message-author-role]'));
-    if(roleNodes.length){
-      roleNodes.sort(byDocOrder);
-      for(i=0; i<roleNodes.length; i++){
-        if(!isVisible(roleNodes[i])) continue;
-        var res = cleanText(roleNodes[i]);
-        res = dedupeMedia(res.text, res.media);
-        r = (roleNodes[i].getAttribute('data-message-author-role') || '').toLowerCase() === 'user' ? 'user' : 'ai';
-        pushMsg(messages, r, res.text, res.media);
-      }
-    }
-  }catch(e){}
-  if(!messages.length){
-    try{
-      var sel = '[class*="message"], [class*="msg-item"], [class*="chat-item"], [class*="chat-message"], [class*="conversation-turn"], [class*="chat-turn"], [data-testid*="turn"], article';
-      var nodes = Array.prototype.slice.call(document.querySelectorAll(sel)).filter(function(n){
-        try{ return n.querySelectorAll(sel).length === 0 && isVisible(n); }catch(e){ return false; }
-      });
-      nodes.sort(byDocOrder);
-      var expectUser = true;
-      for(i=0; i<nodes.length; i++){
-        var res2 = cleanText(nodes[i]);
-        res2 = dedupeMedia(res2.text, res2.media);
-        if(res2.text.length < 2 && res2.media.length === 0) continue;
-        r = guessRole(nodes[i]) || (expectUser ? 'user' : 'ai');
-        pushMsg(messages, r, res2.text, res2.media);
-        expectUser = (r !== 'user');
-      }
-    }catch(e){}
-  }
-  if(!messages.length){
-    try{
-      var res3 = cleanText(document.body);
-      res3 = dedupeMedia(res3.text, res3.media);
-      var whole = res3.text;
-      if(whole && whole.length > 2){
-        var chunks = whole.split(/\n\n+/), eu = true;
-        for(i=0; i<chunks.length; i++){
-          t = chunks[i].trim();
-          if(t.length < 3) continue;
-          pushMsg(messages, eu ? 'user' : 'ai', t, []);
-          eu = !eu;
-        }
-      }
-    }catch(e){}
-  }
-  sendResult(messages);
 }
 
 function loadHistory(cb){
@@ -576,7 +449,7 @@ function loadHistory(cb){
   function step(){
     var h = 0;
     try{ h = sc.scrollHeight || 0; }catch(e){}
-    if(h === lastH) stable++; else { stable = 0; lastH = h; }
+    if(h === lastH) stable++; else{ stable = 0; lastH = h; }
     expandOnce();
     try{ collectPass(); }catch(e){}
     if(stable >= 3 || tries > 60){ cb(); return; }
