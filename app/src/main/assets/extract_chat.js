@@ -14,7 +14,6 @@
     var IMG_BUDGET = 7 * 1024 * 1024;
     var imgBytes = 0;
 
-    // ★★★ Expanded Text Detection with more variations ★★★
     var EXPAND_TEXT = /(show\s*more|read\s*more|see\s*more|view\s*more|show\s*full|show\s*all|show\s*original|expand|continue\s*reading|load\s*more|click\s*to\s*expand|tap\s*to\s*expand|আরও|আরো|সম্পূর্ণ|বিস্তারিত|দেখুন|展开|更多|全部|もっと見る|더\s*보기)/i;
     var BLOCK_TEXT = /(show\s*less|see\s*less|collapse|hide|delete|remove|share|export|download|sign\s*out|log\s*out|logout|regenerate|retry|edit|copy|new\s*chat|settings|upgrade|收起|删除)/i;
     
@@ -25,7 +24,6 @@
         try{ if(window.AndroidPdfExporter && window.AndroidPdfExporter.reportStatus){ window.AndroidPdfExporter.reportStatus(String(s)); } }catch(e){}
     }
 
-    // ★★★ Improved isVisible — more relaxed for hidden buttons ★★★
     function isVisible(el){
         if(!el || el.nodeType !== 1) return true;
         try{ 
@@ -49,7 +47,7 @@
         }catch(e){}
     }
 
-    // ★★★ Auto-Expand Logic ★★★
+    // ★★★ (ঘ) FIX: বিপজ্জনক ক্লিক বন্ধ — শুধু নিরাপদ expand বাটনে ক্লিক ★★★
     function expandOnce(){
         var n = 0, i;
         try{
@@ -73,9 +71,11 @@
                 try{ label = (el.innerText || el.value || el.textContent || el.getAttribute('aria-label') || el.getAttribute('title') || '').toLowerCase(); }catch(e){}
                 if(label.length > 90) label = label.slice(0, 90);
 
+                var cls = (el.className && typeof el.className === 'string') ? el.className.toLowerCase() : '';
                 var ok = false;
                 if(EXPAND_TEXT.test(label) && !BLOCK_TEXT.test(label)) ok = true;
-                else if(el.getAttribute('aria-expanded') === 'false' && label.length < 30 && !BLOCK_TEXT.test(label)) ok = true;
+                else if(el.getAttribute('aria-expanded') === 'false' && label.length > 2 &&
+                        /(more|expand|truncat|clamp)/.test(label + ' ' + cls) && !BLOCK_TEXT.test(label)) ok = true;
 
                 if(ok){ 
                     try{ el.click(); n++; }catch(e){} 
@@ -216,6 +216,16 @@
                 }
             }
 
+            // ★★★ (ঙ) FIX: LaTeX/Math ও লুকানো ডুপ্লিকেট টেক্সট পরিষ্কার ★★★
+            var kx = clone.querySelectorAll('.katex, mjx-container');
+            for(i=0; i<kx.length; i++){
+                var tex = kx[i].querySelector('annotation[encoding="application/x-tex"]');
+                var rep = tex ? ('$' + (tex.textContent||'').trim() + '$') : (kx[i].innerText || '');
+                kx[i].parentNode.replaceChild(document.createTextNode(' ' + rep + ' '), kx[i]);
+            }
+            var hid = clone.querySelectorAll('.katex-mathml, .sr-only, .visually-hidden, [hidden], [style*="display:none"], [style*="display: none"]');
+            for(i=0; i<hid.length; i++){ if(hid[i].parentNode) hid[i].parentNode.removeChild(hid[i]); }
+
             var junk = clone.querySelectorAll(JUNK_SEL);
             for(i=0; i<junk.length; i++){
                 var el = junk[i];
@@ -229,6 +239,28 @@
                 var it = (inline[i].textContent || '').trim();
                 if(it) inline[i].parentNode.replaceChild(document.createTextNode('`' + it + '`'), inline[i]);
             }
+
+            // ★★★ (চ) FIX: লিস্ট নম্বর (১, ২, ৩) ও লিংকের URL ফেরত আনা ★★★
+            var lis = clone.querySelectorAll('li');
+            for(i=0; i<lis.length; i++){
+                var par = lis[i].parentNode;
+                var pre = '• ';
+                if(par && par.tagName && par.tagName.toLowerCase() === 'ol'){
+                    var n = 1, s = lis[i].previousElementSibling;
+                    while(s){ if(s.tagName.toLowerCase()==='li') n++; s = s.previousElementSibling; }
+                    pre = n + '. ';
+                }
+                lis[i].insertBefore(document.createTextNode(pre), lis[i].firstChild);
+            }
+            var as = clone.querySelectorAll('a[href]');
+            for(i=0; i<as.length; i++){
+                var hrefv = as[i].getAttribute('href') || '';
+                var atxt = (as[i].textContent || '').trim();
+                if(hrefv && hrefv.indexOf('http') === 0 && atxt && hrefv.indexOf(atxt) === -1){
+                    as[i].appendChild(document.createTextNode(' (' + hrefv + ')'));
+                }
+            }
+
             var brs = clone.querySelectorAll('br');
             for(i=0; i<brs.length; i++) brs[i].parentNode.replaceChild(document.createTextNode('\n'), brs[i]);
             var cells = clone.querySelectorAll('td, th');
@@ -281,9 +313,10 @@
         return '';
     }
 
+    // ★★★ (ছ) FIX: খুব ছোট মেসেজ (?/হ্যাঁ) আর বাদ পড়বে না ★★★
     function pushMsg(list, role, text, media){
         text = text || ''; media = media || [];
-        if(text.replace(/[\s\uE000-\uE003]/g, '').length < 2 && media.length === 0) return;
+        if(text.replace(/[\s\uE000-\uE003]/g, '').length < 1 && media.length === 0) return;
         if(list.length && list[list.length-1].role === role){
             var last = list[list.length-1];
             var offset = last.media.length;
@@ -316,6 +349,61 @@
             }catch(e2){}
         } finally {
             try{ window.__xExtRunning = false; }catch(e){}
+        }
+    }
+
+    // ★★★ (ক) FIX: ইনক্রিমেন্টাল কালেক্টর — Virtual Scrolling সমস্যার সমাধান ★★★
+    // স্ক্রল করার সাথে সাথেই মেসেজ সংগ্রহ হয়, তাই DOM থেকে মুছে গেলেও ডেটা হারাবে না
+    var collected = [], seen = {};
+
+    function hashStr(s){ var h=5381,i; for(i=0;i<s.length;i++){ h=((h<<5)+h+s.charCodeAt(i))|0; } return String(h); }
+
+    var SITE_SEL = '[data-message-author-role], user-query, model-response, ' +
+        '[data-testid="user-message"], [class*="font-user-message" i], [class*="font-claude-message" i], ' +
+        '[class*="ds-markdown" i], [class*="chat-message" i], [class*="message-bubble" i], ' +
+        '[class*="conversation-turn" i], [class*="chat-turn" i]';
+
+    function getMessageNodes(){
+        var all = Array.prototype.slice.call(document.querySelectorAll(SITE_SEL));
+        var out = all.filter(function(n){
+            if(!isVisible(n)) return false;
+            for(var i=0;i<all.length;i++){ if(all[i]!==n && all[i].contains(n)) return false; }
+            return true;
+        });
+        out.sort(byDocOrder);
+        return out;
+    }
+
+    function roleOf(el){
+        var r = (el.getAttribute('data-message-author-role')||'').toLowerCase();
+        if(r) return (r === 'user') ? 'user' : 'ai';
+        var tag = el.tagName.toLowerCase();
+        if(tag === 'user-query') return 'user';
+        if(tag === 'model-response') return 'ai';
+        return guessRole(el) || 'ai';
+    }
+
+    function quickKey(el){
+        var id = el.getAttribute('data-message-id') || el.getAttribute('data-id') || el.id;
+        if(id) return 'i:' + id;
+        var t = (el.innerText || el.textContent || '').replace(/\s+/g,' ').trim();
+        return 'h:' + hashStr(t.slice(0,60)) + ':' + t.length.toString().slice(0,2);
+    }
+
+    function collectPass(){
+        var nodes = getMessageNodes(), i;
+        for(i=0;i<nodes.length;i++){
+            var el = nodes[i];
+            var k = quickKey(el);
+            var curLen = (el.innerText || '').length;
+            var rec = seen[k];
+            if(rec && curLen <= rec.len) continue;
+            var res = cleanText(el);
+            res = dedupeMedia(res.text, res.media);
+            if(res.text.replace(/[\s\uE000-\uE003]/g,'').length < 1 && !res.media.length) continue;
+            var item = { role: roleOf(el), text: res.text, media: res.media };
+            if(rec){ collected[rec.idx] = item; rec.len = curLen; }
+            else { seen[k] = { idx: collected.length, len: curLen }; collected.push(item); }
         }
     }
 
@@ -391,7 +479,7 @@
         }catch(e){ return document.body; }
     }
 
-    // ★★★ FIX 1: loadHistory — tries বাড়ানো হয়েছে 25 থেকে 60 ★★★
+    // ★★★ (খ) FIX: loadHistory — প্রতি ধাপে collectPass() দিয়ে মেসেজ সংগ্রহ ★★★
     function loadHistory(cb){
         var sc = findScroller(), tries = 0, lastH = -1, stable = 0;
         function step(){
@@ -399,6 +487,7 @@
             try{ h = sc.scrollHeight || 0; }catch(e){}
             if(h === lastH) stable++; else{ stable = 0; lastH = h; }
             expandOnce();
+            try{ collectPass(); }catch(e){}
             if(stable >= 3 || tries > 60){ cb(); return; }
             tries++;
             status('পুরনো মেসজ লোড ' + tries);
@@ -409,7 +498,7 @@
         step();
     }
 
-    // ★★★ FIX 2: sweepDown — guard 100 থেকে 400, stepH কমানো, delay বাড়ানো ★★★
+    // ★★★ (খ) FIX: sweepDown — স্ক্রল করতে করতেই মেসেজ সংগ্রহ ★★★
     function sweepDown(cb){
         var sc = findScroller(), y = 0, guard = 0;
         var stepH = Math.max(200, (sc.clientHeight || 500) - 150);
@@ -418,6 +507,7 @@
             try{ sc.scrollTop = y; }catch(e){}
             try{ window.scrollTo(0, y); }catch(e){}
             expandOnce();
+            try{ collectPass(); }catch(e){}
             var total = 0;
             try{ total = sc.scrollHeight || 0; }catch(e){}
             if(guard % 4 === 0) status('স্ক্যান ' + Math.min(99, Math.round(y * 100 / Math.max(1, total))) + '%');
@@ -428,7 +518,6 @@
         step();
     }
 
-    // ★★★ FIX 3: waitImages — টাইমআউট 5000ms থেকে 12000ms ★★★
     function waitImages(cb){
         var t0 = Date.now();
         function chk(){
@@ -444,16 +533,23 @@
         chk();
     }
 
-    // ★★★ FIX 4: Main flow — আরও expansion passes যোগ করা হয়েছে ★★★
+    // ★★★ (গ) FIX: মেইন ফ্লো — জমানো ডেটা থেকে PDF বানানো হয় ★★★
     try{
         expandAllPasses(3, 250, function(){
             loadHistory(function(){
                 sweepDown(function(){
                     waitImages(function(){
                         expandAllPasses(4, 400, function(){
-                            expandAllPasses(3, 500, function(){
+                            try{ collectPass(); }catch(e){}
+                            if(collected.length){
+                                var out = [];
+                                for(var i=0;i<collected.length;i++){
+                                    pushMsg(out, collected[i].role, collected[i].text, collected[i].media);
+                                }
+                                sendResult(out);
+                            } else {
                                 extract();
-                            });
+                            }
                         });
                     });
                 });
