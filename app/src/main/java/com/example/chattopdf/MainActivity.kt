@@ -92,10 +92,6 @@ class MainActivity : AppCompatActivity() {
     private var bitmapBytes = 0L
     private val payloadBuf = StringBuilder()
 
-    private val exportTimeoutRunnable = Runnable {
-        if (exporting) finishExport("সময় শেষ — আবার চেষ্টা করুন।")
-    }
-
     data class ChatMessage(val role: String, val text: String, val media: List<MediaItem> = emptyList())
     data class MediaItem(val type: String, val data: String, val w: Float, val h: Float)
     private data class Seg(val text: String, val isCode: Boolean, val mediaIndex: Int = -1)
@@ -164,9 +160,21 @@ class MainActivity : AppCompatActivity() {
         })
     }
 
-    override fun onDestroy() { super.onDestroy(); webView.destroy() }
-    override fun onPause() { super.onPause(); webView.onPause(); CookieManager.getInstance().flush() }
-    override fun onResume() { super.onResume(); webView.onResume() }
+    override fun onDestroy() {
+        super.onDestroy()
+        webView.destroy()
+    }
+
+    override fun onPause() {
+        super.onPause()
+        webView.onPause()
+        CookieManager.getInstance().flush()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        webView.onResume()
+    }
 
     private fun hasStoragePermission(): Boolean {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) return true
@@ -190,22 +198,21 @@ class MainActivity : AppCompatActivity() {
         if (exporting) return
         val current = webView.url ?: ""
         if (current.startsWith("file:///android_asset")) {
-            Toast.makeText(this, "আগে একটা AI চ্যাট খুলুন।", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, "আগে একটা AI চ্যাট খুলুন, তারপর Export চাপুন।", Toast.LENGTH_LONG).show()
             return
         }
 
         exporting = true
         received = false
         exportToken++
+        val token = exportToken
         pageUrlForExport = current
         uaForExport = webView.settings.userAgentString ?: ""
         payloadBuf.setLength(0)
 
         fab.isEnabled = false
         fab.text = "পড়া হচ্ছে..."
-        Toast.makeText(this, "পুরো চ্যাট স্ক্যান হচ্ছে...", Toast.LENGTH_SHORT).show()
-
-        webView.evaluateJavascript("try{window.__xExtRunning=false;}catch(e){}", null)
+        Toast.makeText(this, "পুরো চ্যাট স্ক্যান ও পড়া হচ্ছে, একটু সময় লাগবে...", Toast.LENGTH_SHORT).show()
 
         lifecycleScope.launch {
             val js = withContext(Dispatchers.IO) {
@@ -216,21 +223,17 @@ class MainActivity : AppCompatActivity() {
             else finishExport("JS ফাইল লোড করা যায়নি।")
         }
 
-        runOnUiThread {
-            fab.removeCallbacks(exportTimeoutRunnable)
-            fab.postDelayed(exportTimeoutRunnable, 300000)
-        }
+        fab.postDelayed({
+            if (exporting && token == exportToken) finishExport("সময় শেষ — আবার চেষ্টা করুন।")
+        }, 300000)
     }
 
     private fun finishExport(message: String) {
         exporting = false
         exportToken++
-        runOnUiThread {
-            fab.removeCallbacks(exportTimeoutRunnable)
-            fab.isEnabled = true
-            fab.text = "Export PDF"
-            Toast.makeText(this, message, Toast.LENGTH_LONG).show()
-        }
+        fab.isEnabled = true
+        fab.text = "Export PDF"
+        Toast.makeText(this, message, Toast.LENGTH_LONG).show()
     }
 
     inner class ChatBridge {
@@ -244,10 +247,6 @@ class MainActivity : AppCompatActivity() {
         @JavascriptInterface
         fun receiveChunk(part: String, last: Int) {
             if (!exporting || received) return
-            runOnUiThread {
-                fab.removeCallbacks(exportTimeoutRunnable)
-                fab.postDelayed(exportTimeoutRunnable, 300000)
-            }
             payloadBuf.append(part)
             if (last == 1) {
                 val json = payloadBuf.toString()
@@ -263,14 +262,14 @@ class MainActivity : AppCompatActivity() {
             lifecycleScope.launch(Dispatchers.IO) {
                 val result = try {
                     val (title, url, messages) = parsePayload(json)
-                    if (messages.isEmpty()) "কোনো টেক্সট পাওয়া যায়নি!"
+                    if (messages.isEmpty()) "কোনো টেক্সট পাওয়া যায়নি! চ্যাট সম্পূর্ণ লোড হয়েছে কিনা দেখুন।"
                     else {
                         val fileName = "Chat_Export_${SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())}.pdf"
                         val path = generateAndSavePdf(title, url, messages, fileName)
-                        "✅ PDF সফল: $path"
+                        "✅ PDF সফল হয়েছে: $path"
                     }
-                } catch (e: OutOfMemoryError) { "মেমরি অভাবে ব্যর্থ।" }
-                catch (e: Exception) { "ব্যর্থ: ${e.message ?: "অজানা"}" }
+                } catch (e: OutOfMemoryError) { "মেমরি অভাবে এক্সপোর্ট ব্যর্থ। অ্যাপ বন্ধ করে আবার চেষ্টা করুন।" }
+                catch (e: Exception) { "এক্সপোর্ট ব্যর্থ: ${e.message ?: "অজানা এরর"}" }
                 withContext(Dispatchers.Main) { finishExport(result) }
             }
         }
@@ -306,10 +305,9 @@ class MainActivity : AppCompatActivity() {
         return Triple(title, url, list)
     }
 
-    // Tab = 4 spaces, indent with non-breaking space
     private fun prepareCode(code: String): String {
         val sb = StringBuilder()
-        val lines = code.replace("\t", "    ").split("\n")
+        val lines = code.replace("\t", " ").split("\n")
         for ((i, line) in lines.withIndex()) {
             if (i > 0) sb.append('\n')
             var n = 0
@@ -531,7 +529,7 @@ class MainActivity : AppCompatActivity() {
             cursorY += titleLayout.height + 6f
 
             val dateStr = SimpleDateFormat("dd MMM yyyy, hh:mm a", Locale.US).format(Date())
-            val infoText = (if (chatUrl.isNotBlank()) "$chatUrl\n" else "") + "Exported: $dateStr | Total: ${messages.size}"
+            val infoText = (if (chatUrl.isNotBlank()) "$chatUrl\n" else "") + "Exported: $dateStr | Total messages: ${messages.size}"
             val infoLayout = layoutOf(infoText, smallPaint, contentWidth.toInt(), false)
             canvas.save(); canvas.translate(marginLeft, cursorY); infoLayout.draw(canvas); canvas.restore()
             cursorY += infoLayout.height + 8f
