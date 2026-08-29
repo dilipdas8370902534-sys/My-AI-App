@@ -8,7 +8,8 @@
     
     var CODE_SEL = 'pre, code-block, md-code-block, .code-block, [class*="code-block" i], [class*="codeBlock" i], .highlight';
     var LINENUM_SEL = '.line-numbers-rows, .hljs-ln-numbers, .hljs-ln-n, .CodeMirror-linenumber, .cm-lineNumbers, .gutter, [class*="line-number" i], [class*="lineNumber" i], [data-line-number]';
-    var JUNK_SEL = 'script, style, noscript, iframe, input, select, button, nav, header, footer, [role="button"], [class*="copy" i], [class*="share" i], [class*="toolbar" i], [class*="feedback" i], [class*="tooltip" i]';
+    var JUNK_SEL_HARD = 'script, style, noscript, iframe, input, select, button, nav, header, footer, [role="button"]';
+    var JUNK_SEL_SOFT = '[class*="copy" i], [class*="share" i], [class*="toolbar" i], [class*="feedback" i], [class*="tooltip" i]';
     
     var MAX_IMG_W = 1000;
     var IMG_BUDGET = 7 * 1024 * 1024;
@@ -252,12 +253,25 @@
                 }
             }
 
-            var junk = clone.querySelectorAll(JUNK_SEL);
-            for(i=0; i<junk.length; i++){
-                var el = junk[i];
-                if(!el.parentNode) continue;
-                if(el.textContent && (el.textContent.indexOf(CS) !== -1 || el.textContent.indexOf(MS) !== -1)) continue;
-                el.parentNode.removeChild(el);
+            var junkHard = clone.querySelectorAll(JUNK_SEL_HARD);
+            for(i=0; i<junkHard.length; i++){
+                var elH = junkHard[i];
+                if(!elH.parentNode) continue;
+                if(elH.textContent && (elH.textContent.indexOf(CS) !== -1 || elH.textContent.indexOf(MS) !== -1)) continue;
+                elH.parentNode.removeChild(elH);
+            }
+            // ★★★ FIX: class*="copy/share/toolbar/feedback/tooltip" selectors matched by
+            // substring, so a site's own message-wrapper class (e.g. "msg-copy-block")
+            // could match and wipe out a whole real answer. Only remove these when the
+            // element's own text is short (a button/label), never when it holds real content.
+            var junkSoft = clone.querySelectorAll(JUNK_SEL_SOFT);
+            for(i=0; i<junkSoft.length; i++){
+                var elS = junkSoft[i];
+                if(!elS.parentNode) continue;
+                var txtS = elS.textContent || '';
+                if(txtS.indexOf(CS) !== -1 || txtS.indexOf(MS) !== -1) continue;
+                if(txtS.trim().length > 120) continue;
+                elS.parentNode.removeChild(elS);
             }
 
             var inline = clone.querySelectorAll('code');
@@ -319,7 +333,7 @@
 
     function pushMsg(list, role, text, media){
         text = text || ''; media = media || [];
-        if(text.replace(/[\s\uE000-\uE003]/g, '').length < 2 && media.length === 0) return;
+        if(text.replace(/[\s\uE000-\uE003]/g, '').length < 1 && media.length === 0) return;
         if(list.length && list[list.length-1].role === role){
             var last = list[list.length-1];
             var offset = last.media.length;
@@ -384,7 +398,7 @@
                     var res2 = cleanText(nodes[i]);
                     res2 = dedupeMedia(res2.text, res2.media);
                     t = res2.text; var media2 = res2.media;
-                    if(t.length < 2 && media2.length === 0) continue;
+                    if(t.length < 1 && media2.length === 0) continue;
                     r = guessRole(nodes[i]) || (expectUser ? 'user' : 'ai');
                     pushMsg(messages, r, t, media2);
                     expectUser = (r !== 'user');
@@ -397,13 +411,23 @@
                 var res3 = cleanText(document.body);
                 res3 = dedupeMedia(res3.text, res3.media);
                 var whole = res3.text;
+                var media3 = res3.media;
                 if(whole && whole.length > 2){
                     var chunks = whole.split(/\n\n+/);
                     var eu = true;
+                    var mre = new RegExp(MS + '(\\d+)' + ME, 'g');
                     for(i=0; i<chunks.length; i++){
                         t = chunks[i].trim();
                         if(t.length < 3) continue;
-                        pushMsg(messages, eu ? 'user' : 'ai', t, []);
+                        var chunkMedia = [];
+                        var chunkText = t.replace(mre, function(_, d){
+                            var mi = parseInt(d, 10);
+                            if(isNaN(mi) || mi < 0 || mi >= media3.length) return '';
+                            var newIdx = chunkMedia.length;
+                            chunkMedia.push(media3[mi]);
+                            return MS + newIdx + ME;
+                        });
+                        pushMsg(messages, eu ? 'user' : 'ai', chunkText, chunkMedia);
                         eu = !eu;
                     }
                 }
@@ -495,3 +519,4 @@
         sendResult([]);
     }
 })();
+
