@@ -22,7 +22,6 @@ import android.text.Layout
 import android.text.StaticLayout
 import android.text.TextPaint
 import android.view.View
-import android.view.WindowManager
 import android.view.inputmethod.InputMethodManager
 import android.webkit.CookieManager
 import android.webkit.JavascriptInterface
@@ -63,7 +62,6 @@ class MainActivity : AppCompatActivity() {
 
     private val storagePermissionCode = 1001
     private val homeUrl = "file:///android_asset/home.html"
-    private val chromeUa = "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"
 
     @Volatile private var exporting = false
     @Volatile private var received = false
@@ -89,7 +87,6 @@ class MainActivity : AppCompatActivity() {
     private val PLACEHOLDER_TEXT_HEIGHT = 24f
     private val MAX_DECODE_WIDTH_PX = 900
     private val BITMAP_BUDGET = 24 * 1024 * 1024L
-    private val MAX_PAYLOAD_CHARS = 60_000_000
 
     private val allBitmaps = mutableListOf<Bitmap>()
     private var bitmapBytes = 0L
@@ -123,13 +120,9 @@ class MainActivity : AppCompatActivity() {
         s.cacheMode = WebSettings.LOAD_DEFAULT
         s.mediaPlaybackRequiresUserGesture = false
         s.mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
-        s.userAgentString = chromeUa
+        s.userAgentString = s.userAgentString.replace("; wv", "")
         s.allowFileAccess = true
         s.allowContentAccess = true
-        s.javaScriptCanOpenWindowsAutomatically = true
-        s.textZoom = 100
-        s.loadsImagesAutomatically = true
-        s.blockNetworkImage = false
 
         webView.setLayerType(View.LAYER_TYPE_HARDWARE, null)
         webView.overScrollMode = View.OVER_SCROLL_NEVER
@@ -152,7 +145,7 @@ class MainActivity : AppCompatActivity() {
                 val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
                 imm.hideSoftInputFromWindow(etUrl.windowToken, 0)
             } else {
-                Toast.makeText(this, "প্রথমে একটি URL লিখুন", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, "আগে একটা URL লিখুন", Toast.LENGTH_SHORT).show()
             }
         }
 
@@ -174,7 +167,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onPause() {
         super.onPause()
-        if (!exporting) webView.onPause()
+        webView.onPause()
         CookieManager.getInstance().flush()
     }
 
@@ -197,7 +190,7 @@ class MainActivity : AppCompatActivity() {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (requestCode == storagePermissionCode) {
             if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) startExport()
-            else Toast.makeText(this, "স্টোরেজ পারমিশন ছাড়া PDF সেভ করা যাবে না", Toast.LENGTH_LONG).show()
+            else Toast.makeText(this, "স্টোরেজ পারমিশন দরকার।", Toast.LENGTH_LONG).show()
         }
     }
 
@@ -205,7 +198,7 @@ class MainActivity : AppCompatActivity() {
         if (exporting) return
         val current = webView.url ?: ""
         if (current.startsWith("file:///android_asset")) {
-            Toast.makeText(this, "আগে কোনো AI চ্যাট লোড করুন, তারপর Export চাপুন", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, "আগে একটা AI চ্যাট খুলুন, তারপর Export চাপুন।", Toast.LENGTH_LONG).show()
             return
         }
 
@@ -214,14 +207,12 @@ class MainActivity : AppCompatActivity() {
         exportToken++
         val token = exportToken
         pageUrlForExport = current
-        uaForExport = webView.settings.userAgentString ?: chromeUa
-        synchronized(payloadBuf) { payloadBuf.setLength(0) }
-
-        try { window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) } catch (e: Exception) {}
+        uaForExport = webView.settings.userAgentString ?: ""
+        payloadBuf.setLength(0)
 
         fab.isEnabled = false
-        fab.text = "প্রস্তুত হচ্ছে..."
-        Toast.makeText(this, "পুরো চ্যাট স্ক্যান শুরু হয়েছে, স্ক্রিন খোলা রাখুন...", Toast.LENGTH_LONG).show()
+        fab.text = "পড়া হচ্ছে..."
+        Toast.makeText(this, "পুরো চ্যাট স্ক্যান ও পড়া হচ্ছে, একটু সময় লাগবে...", Toast.LENGTH_SHORT).show()
 
         lifecycleScope.launch {
             val js = withContext(Dispatchers.IO) {
@@ -229,19 +220,18 @@ class MainActivity : AppCompatActivity() {
                 catch (e: Exception) { "" }
             }
             if (js.isNotEmpty()) webView.evaluateJavascript(js, null)
-            else finishExport("JS ফাইল পড়া যায়নি")
+            else finishExport("JS ফাইল লোড করা যায়নি।")
         }
 
+        // v2.3-এ timeout বাড়ানো হয়েছে কারণ স্ক্রলিং ও expansion বেশি সময় নেবে
         fab.postDelayed({
-            if (exporting && token == exportToken) finishExport("সময় শেষ — চ্যাট খুব বড়, আবার চেষ্টা করুন")
-        }, 600000)
+            if (exporting && token == exportToken) finishExport("সময় শেষ — আবার চেষ্টা করুন।")
+        }, 300000)  // ১৮০ থেকে ৩০০ সেকেন্ড (৫ মিনিট)
     }
 
     private fun finishExport(message: String) {
         exporting = false
         exportToken++
-        synchronized(payloadBuf) { payloadBuf.setLength(0) }
-        try { window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) } catch (e: Exception) {}
         fab.isEnabled = true
         fab.text = "Export PDF"
         Toast.makeText(this, message, Toast.LENGTH_LONG).show()
@@ -258,20 +248,12 @@ class MainActivity : AppCompatActivity() {
         @JavascriptInterface
         fun receiveChunk(part: String, last: Int) {
             if (!exporting || received) return
-            var json: String? = null
-            synchronized(payloadBuf) {
-                if (payloadBuf.length + part.length > MAX_PAYLOAD_CHARS) {
-                    payloadBuf.setLength(0)
-                    return
-                }
-                payloadBuf.append(part)
-                if (last == 1) {
-                    json = payloadBuf.toString()
-                    payloadBuf.setLength(0)
-                }
+            payloadBuf.append(part)
+            if (last == 1) {
+                val json = payloadBuf.toString()
+                payloadBuf.setLength(0)
+                receiveChatData(json)
             }
-            val ready = json
-            if (ready != null) receiveChatData(ready)
         }
 
         @JavascriptInterface
@@ -281,14 +263,14 @@ class MainActivity : AppCompatActivity() {
             lifecycleScope.launch(Dispatchers.IO) {
                 val result = try {
                     val (title, url, messages) = parsePayload(json)
-                    if (messages.isEmpty()) "কোনো চ্যাট পাওয়া যায়নি! পেজ পুরো লোড করে আবার চেষ্টা করুন"
+                    if (messages.isEmpty()) "কোনো টেক্সট পাওয়া যায়নি! চ্যাট সম্পূর্ণ লোড হয়েছে কিনা দেখুন।"
                     else {
                         val fileName = "Chat_Export_${SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())}.pdf"
                         val path = generateAndSavePdf(title, url, messages, fileName)
-                        "✅ PDF সেভ হয়েছে: $path"
+                        "✅ PDF সফল হয়েছে: $path"
                     }
-                } catch (e: OutOfMemoryError) { "মেমোরি শেষ — চ্যাট খুব বড় বা ছবি অনেক বেশি" }
-                catch (e: Exception) { "সমস্যা হয়েছে: ${e.message ?: "অজানা এরর"}" }
+                } catch (e: OutOfMemoryError) { "মেমরি অভাবে এক্সপোর্ট ব্যর্থ। অ্যাপ বন্ধ করে আবার চেষ্টা করুন।" }
+                catch (e: Exception) { "এক্সপোর্ট ব্যর্থ: ${e.message ?: "অজানা এরর"}" }
                 withContext(Dispatchers.Main) { finishExport(result) }
             }
         }
@@ -326,7 +308,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun prepareCode(code: String): String {
         val sb = StringBuilder()
-        val lines = code.replace("\t", "    ").split("\n")
+        val lines = code.replace("\t", " ").split("\n")
         for ((i, line) in lines.withIndex()) {
             if (i > 0) sb.append('\n')
             var n = 0
@@ -435,7 +417,7 @@ class MainActivity : AppCompatActivity() {
                 data.startsWith("http://") || data.startsWith("https://") -> {
                     val conn = URL(data).openConnection() as HttpURLConnection
                     conn.connectTimeout = 8000
-                    conn.readTimeout = 12000
+                    conn.readTimeout = 10000
                     conn.instanceFollowRedirects = true
                     conn.doInput = true
                     if (uaForExport.isNotBlank()) conn.setRequestProperty("User-Agent", uaForExport)
@@ -487,7 +469,7 @@ class MainActivity : AppCompatActivity() {
         val size = mediaSizeOf(item, maxWidth, maxHeight, bitmapCache, svgCache, key)
         if (size == null) {
             val p = TextPaint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.GRAY; textSize = 11f }
-            canvas.drawText("[ছবি লোড হয়নি]", x, y + 16f, p)
+            canvas.drawText("[ছবি লোড করা যায়নি]", x, y + 16f, p)
             return
         }
         try {
@@ -568,7 +550,7 @@ class MainActivity : AppCompatActivity() {
 
                 val bitmapCache = HashMap<Int, Bitmap?>()
                 val svgCache = HashMap<Int, SVG?>()
-                val label = if (isUser) "USER | প্রশ্ন #$questionNo" else "AI | উত্তর #$answerNo"
+                val label = if (isUser) "USER | #$questionNo" else "AI | উত্তর #$answerNo"
                 val bgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = if (isUser) userBgColor else aiBgColor }
                 val barPaint = Paint().apply { color = if (isUser) userBarColor else aiBarColor }
                 val titlePaint = if (isUser) userTitlePaint else aiTitlePaint
@@ -584,26 +566,18 @@ class MainActivity : AppCompatActivity() {
                         items.add(LineItem(null, 0, false, hh + MEDIA_TOP_PADDING + MEDIA_BOTTOM_PADDING, mi))
                     }
                 } else {
-                    val usedMedia = HashSet<Int>()
                     for (seg in segments) {
                         if (seg.isCode) {
                             if (seg.text.isBlank()) continue
                             val lay = layoutOf(seg.text, codePaint, (innerWidth - codeInset * 2).toInt(), true)
                             for (l in 0 until lay.lineCount) items.add(LineItem(lay, l, true, (lay.getLineBottom(l) - lay.getLineTop(l)).toFloat()))
                         } else if (seg.mediaIndex >= 0 && seg.mediaIndex < msg.media.size) {
-                            usedMedia.add(seg.mediaIndex)
                             val hh = measureMediaHeight(msg.media[seg.mediaIndex], innerWidth, maxMediaHeight, bitmapCache, svgCache, seg.mediaIndex)
                             items.add(LineItem(null, 0, false, hh + MEDIA_TOP_PADDING + MEDIA_BOTTOM_PADDING, seg.mediaIndex))
                         } else {
                             if (seg.text.isBlank()) continue
                             val lay = layoutOf(seg.text, bodyPaint, innerWidth.toInt(), false)
                             for (l in 0 until lay.lineCount) items.add(LineItem(lay, l, false, (lay.getLineBottom(l) - lay.getLineTop(l)).toFloat()))
-                        }
-                    }
-                    for (mi in msg.media.indices) {
-                        if (!usedMedia.contains(mi)) {
-                            val hh = measureMediaHeight(msg.media[mi], innerWidth, maxMediaHeight, bitmapCache, svgCache, mi)
-                            items.add(LineItem(null, 0, false, hh + MEDIA_TOP_PADDING + MEDIA_BOTTOM_PADDING, mi))
                         }
                     }
                 }
@@ -641,7 +615,7 @@ class MainActivity : AppCompatActivity() {
                             canvas.drawRect(RectF(xBase - 2f, y, xBase + 1f, y + item.height), codeBarPaint)
                         }
                         if (item.mediaIndex >= 0 && item.mediaIndex < msg.media.size) {
-                            drawMedia(canvas, msg.media[item.mediaIndex], xBase, y + MEDIA_TOP_PADDING, innerWidth, maxMediaHeight, bitmapCache, svgCache, item.mediaIndex)
+                            drawMedia(canvas, msg.media[item.mediaIndex], xBase, y + MEDIA_TOP_PADDING, innerWidth.toFloat(), maxMediaHeight, bitmapCache, svgCache, item.mediaIndex)
                         } else if (item.layout != null) {
                             try {
                                 val top = item.layout.getLineTop(item.line).toFloat()
@@ -660,12 +634,6 @@ class MainActivity : AppCompatActivity() {
                         cursorY += 16f
                     }
                 }
-
-                for (b in bitmapCache.values) {
-                    try { if (b != null && !b.isRecycled) { bitmapBytes -= b.allocationByteCount.toLong(); allBitmaps.remove(b); b.recycle() } } catch (e: Exception) {}
-                }
-                bitmapCache.clear(); svgCache.clear()
-                if (bitmapBytes < 0L) bitmapBytes = 0L
             }
             drawFooter(); pdfDocument.finishPage(page)
             val path = writePdfToPublicDownloads(pdfDocument, fileName)
@@ -686,8 +654,8 @@ class MainActivity : AppCompatActivity() {
                 put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
                 put(MediaStore.Downloads.IS_PENDING, 1)
             }
-            val uri: Uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values) ?: throw IllegalStateException("Downloads ফোল্ডারে ফাইল তৈরি করা যায়নি")
-            resolver.openOutputStream(uri)?.use { pdfDocument.writeTo(it) } ?: throw IllegalStateException("ফাইল লেখা যায়নি")
+            val uri: Uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values) ?: throw IllegalStateException("পাবলিক Downloads ফোল্ডারে ফাইল তৈরি করা গেল না।")
+            resolver.openOutputStream(uri)?.use { pdfDocument.writeTo(it) } ?: throw IllegalStateException("আউটপুট স্ট্রিম খোলা গেল না")
             values.clear(); values.put(MediaStore.Downloads.IS_PENDING, 0); resolver.update(uri, values, null, null)
             "/storage/emulated/0/Download/$fileName"
         } else {
