@@ -13,8 +13,8 @@
     var MAX_IMG_W = 1000;
     var IMG_BUDGET = 7 * 1024 * 1024;
     var imgBytes = 0;
+    var MIN_IMG_DIM = 72;
 
-    // ★★★ Expanded Text Detection with more variations ★★★
     var EXPAND_TEXT = /(show\s*more|read\s*more|see\s*more|view\s*more|show\s*full|show\s*all|show\s*original|expand|continue\s*reading|load\s*more|click\s*to\s*expand|tap\s*to\s*expand|আরও|আরো|সম্পূর্ণ|বিস্তারিত|দেখুন|展开|更多|全部|もっと見る|더\s*보기)/i;
     var BLOCK_TEXT = /(show\s*less|see\s*less|collapse|hide|delete|remove|share|export|download|sign\s*out|log\s*out|logout|regenerate|retry|edit|copy|new\s*chat|settings|upgrade|收起|删除)/i;
     
@@ -25,7 +25,6 @@
         try{ if(window.AndroidPdfExporter && window.AndroidPdfExporter.reportStatus){ window.AndroidPdfExporter.reportStatus(String(s)); } }catch(e){}
     }
 
-    // ★★★ Improved isVisible — more relaxed for hidden buttons ★★★
     function isVisible(el){
         if(!el || el.nodeType !== 1) return true;
         try{ 
@@ -49,7 +48,6 @@
         }catch(e){}
     }
 
-    // ★★★ Auto-Expand Logic ★★★
     function expandOnce(){
         var n = 0, i;
         try{
@@ -114,6 +112,7 @@
         var w = img.naturalWidth || img.width || 0;
         var h = img.naturalHeight || img.height || 0;
         if(w < 1 || h < 1) return null;
+        if(w < MIN_IMG_DIM || h < MIN_IMG_DIM) return null;
         var src = img.src || '';
         if(imgBytes > IMG_BUDGET) return src ? {type:'img', data:src, w:w, h:h} : null;
         try{
@@ -255,6 +254,48 @@
         return { text: newText, media: out };
     }
 
+    var TOOL_STATUS_RE = /^(Searched the web|Fetched a page|Read (a )?memory|Done)$/i;
+    var DISCLAIMER_RE = /^Turn on web search in Search and tools menu\.?/i;
+    var TIMEAGO_RE = /^\d+\s*(second|minute|hour|day)s?\s*ago$/i;
+    var BARE_DOMAIN_RE = /^(https?:\/\/)?(www\.)?[a-z0-9-]+(\.[a-z0-9-]+)+(\/[^\s]*)?$/i;
+    var RESPONDED_PREFIX_RE = /^.{1,30}?\sresponded:\s*/i;
+
+    function stripToolNoise(text){
+        if(!text) return text;
+        var lines = text.split('\n');
+        var out = [];
+        var i = 0;
+        while(i < lines.length){
+            var raw = lines[i];
+            var line = raw.trim();
+
+            if(TOOL_STATUS_RE.test(line) || DISCLAIMER_RE.test(line) || TIMEAGO_RE.test(line)){
+                i++; continue;
+            }
+
+            var m = line.match(RESPONDED_PREFIX_RE);
+            if(m){
+                line = line.slice(m[0].length);
+                raw = line;
+                if(!line){ i++; continue; }
+            }
+
+            if(i + 1 < lines.length){
+                var nextLine = lines[i+1].trim();
+                if(BARE_DOMAIN_RE.test(nextLine) && line.length > 0 && !BARE_DOMAIN_RE.test(line)){
+                    i += 2; continue;
+                }
+            }
+            if(BARE_DOMAIN_RE.test(line)){ i++; continue; }
+
+            if(/^[^\x00-\x7F]$/.test(line)){ i++; continue; }
+
+            out.push(raw);
+            i++;
+        }
+        return out.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+    }
+
     function shiftMarkers(text, offset){
         if(!offset) return text;
         return (text || '').replace(new RegExp(MS + '(\\d+)' + ME, 'g'), function(_, d){
@@ -331,6 +372,7 @@
                     res = dedupeMedia(res.text, res.media);
                     t = res.text; var media = res.media;
                     r = (roleNodes[i].getAttribute('data-message-author-role') || '').toLowerCase() === 'user' ? 'user' : 'ai';
+                    if(r === 'ai') t = stripToolNoise(t);
                     pushMsg(messages, r, t, media);
                 }
             }
@@ -350,6 +392,7 @@
                     t = res2.text; var media2 = res2.media;
                     if(t.length < 2 && media2.length === 0) continue;
                     r = guessRole(nodes[i]) || (expectUser ? 'user' : 'ai');
+                    if(r === 'ai') t = stripToolNoise(t);
                     pushMsg(messages, r, t, media2);
                     expectUser = (r !== 'user');
                 }
@@ -367,6 +410,7 @@
                     for(i=0; i<chunks.length; i++){
                         t = chunks[i].trim();
                         if(t.length < 3) continue;
+                        if(!eu) t = stripToolNoise(t);
                         pushMsg(messages, eu ? 'user' : 'ai', t, []);
                         eu = !eu;
                     }
@@ -391,7 +435,6 @@
         }catch(e){ return document.body; }
     }
 
-    // ★★★ FIX 1: loadHistory — tries বাড়ানো হয়েছে 25 থেকে 60 ★★★
     function loadHistory(cb){
         var sc = findScroller(), tries = 0, lastH = -1, stable = 0;
         function step(){
@@ -409,7 +452,6 @@
         step();
     }
 
-    // ★★★ FIX 2: sweepDown — guard 100 থেকে 400, stepH কমানো, delay বাড়ানো ★★★
     function sweepDown(cb){
         var sc = findScroller(), y = 0, guard = 0;
         var stepH = Math.max(200, (sc.clientHeight || 500) - 150);
@@ -428,7 +470,6 @@
         step();
     }
 
-    // ★★★ FIX 3: waitImages — টাইমআউট 5000ms থেকে 12000ms ★★★
     function waitImages(cb){
         var t0 = Date.now();
         function chk(){
@@ -444,7 +485,6 @@
         chk();
     }
 
-    // ★★★ FIX 4: Main flow — আরও expansion passes যোগ করা হয়েছে ★★★
     try{
         expandAllPasses(3, 250, function(){
             loadHistory(function(){
